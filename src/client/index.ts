@@ -3,7 +3,7 @@ import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type {} from '@deepseek-ai/dsh-client-ui-slots'
 import { StatusBadge, type StatusBadgeInjected } from './StatusBadge.tsx'
-import type { StatusEvent, StatusPayload } from './status.ts'
+import type { AlertEvent, StatusEvent, StatusPayload } from './status.ts'
 import { en, zh, type StatusLocaleKey } from './locales.ts'
 import cssText from './status.css?raw'
 
@@ -49,11 +49,20 @@ export function apply(ctx: ClientContext): void {
     onConnectionChange: (connected: boolean) => void,
   ): (() => void) => {
     const source = new EventSource(eventsUrl)
+    const parseEvent = (raw: string): unknown => {
+      try {
+        return JSON.parse(raw)
+      } catch {
+        return null
+      }
+    }
     source.addEventListener('snapshot', (event) => {
-      onEvent({ type: 'snapshot', payload: JSON.parse((event as MessageEvent).data) })
+      const payload = parseEvent((event as MessageEvent).data)
+      if (payload !== null) onEvent({ type: 'snapshot', payload: payload as StatusPayload })
     })
     source.addEventListener('alert', (event) => {
-      onEvent({ type: 'alert', payload: JSON.parse((event as MessageEvent).data) })
+      const payload = parseEvent((event as MessageEvent).data)
+      if (payload !== null) onEvent({ type: 'alert', payload: payload as AlertEvent })
     })
     source.addEventListener('open', () => onConnectionChange(true))
     source.addEventListener('error', () => onConnectionChange(false))

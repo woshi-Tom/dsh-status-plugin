@@ -110,6 +110,20 @@ data: {"active":true,"reason":"cpu","value":0.87,"threshold":0.8}
 | `hysteresis` | `0.1` | 恢复余量：告警只在值低于 `threshold × (1 − hysteresis)` 时解除 |
 | `heartbeatMs` | `30000` | 快照推送间隔 |
 | `checkIntervalMs` | `5000` | 告警监控采样间隔 |
+| `authToken` | `''` | 两个路由都要求的共享密钥；留空禁用鉴权。见[鉴权](#鉴权) |
+| `maxSubscribers` | `32` | SSE 订阅者上限；超限的新连接收到错误响应 |
+| `maxBufferedBytes` | `65536` | 每个订阅者的写缓冲高水位；超过的慢消费者会被丢弃 |
+
+### 鉴权
+
+设置 `authToken` 后，两个路由都要求携带该令牌，可通过任一通道：
+
+- `GET /api/status` — `Authorization: Bearer <token>` 请求头，或 `?token=<token>`。
+- `GET /api/status/events` — `?token=<token>` 查询参数；原生 `EventSource` 无法设置自定义请求头。
+
+被拒绝的请求返回 `401` 与 `{ "ok": false, "error": "unauthorized" }`。比较是恒时间的（`crypto.timingSafeEqual`），错误的令牌不会泄漏长度。由于查询参数可能出现在日志和历史记录中，`GET /api/status` 请优先使用请求头鉴权，SSE 流请尽量放在仅 loopback 的 web 服务器上。
+
+内置浏览器徽标没有接收 host 令牌的通道（client manifest 无法读取 host 配置），因此启用 `authToken` 会使徽标的状态视图不可用；自定义 UI 可通过上述请求头/查询参数鉴权。需要内置 UI 的实例应保持 `authToken` 为空（默认值），并依赖 web 服务器的 loopback 绑定。
 
 浏览器侧使用原生 `EventSource` 订阅（断线自动重连），并渲染：
 
@@ -124,6 +138,7 @@ data: {"active":true,"reason":"cpu","value":0.87,"threshold":0.8}
 - `pluginInventory` 可选：服务缺失时 `plugins.entries` 返回 `[]` 而不是报错。
 - 响应处理器与两个周期定时器（heartbeat 与告警采样）都做了异常隔离：收集抛错只记日志，绝不作为 uncaughtException 传播出去导致被监控的 harness 崩溃。
 - 响应携带 `cache-control: no-store`（运行时数据不可缓存）；SSE 流使用 `text/event-stream` 并带 `x-accel-buffering: no`。
+- SSE 流有界：最多 `maxSubscribers` 个并发订阅者；写缓冲超过 `maxBufferedBytes`（或 socket 写入停滞）的订阅者会被丢弃，慢消费者无法拖死进程。插件卸载会结束所有打开的流。
 
 ## 环境要求
 

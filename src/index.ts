@@ -2,7 +2,8 @@ import type { IncomingMessage } from 'node:http';
 import type { Context } from '@deepseek-ai/cordis';
 import z from '@deepseek-ai/schemastery';
 import { AlertMonitor, type AlertEvent, type AlertReason } from './alerts.js';
-import { SseHub } from './sse.js';
+import { isAuthorized } from './auth.js';
+import { SseHub, DEFAULT_MAX_SUBSCRIBERS, DEFAULT_MAX_BUFFERED_BYTES } from './sse.js';
 import { collectStatus, sendJson, type StatusPayload, type StatusResponse } from './status.js';
 
 /** CPU utilization fraction (0..1) at which the host reports an overload alert. */
@@ -22,6 +23,12 @@ export interface Config {
   hysteresis: number;
   heartbeatMs: number;
   checkIntervalMs: number;
+  /** Optional bearer token required by both endpoints; empty disables authentication. */
+  authToken: string;
+  /** Greatest number of concurrent SSE streams accepted. */
+  maxSubscribers: number;
+  /** Per-stream write-buffer cap (bytes) before a slow subscriber is dropped. */
+  maxBufferedBytes: number;
 }
 
 export const Config: z<Config> = z.object({
@@ -30,6 +37,9 @@ export const Config: z<Config> = z.object({
   hysteresis: z.number().min(0).max(0.5).default(DEFAULT_HYSTERESIS),
   heartbeatMs: z.number().min(1_000).default(DEFAULT_HEARTBEAT_MS),
   checkIntervalMs: z.number().min(1_000).default(DEFAULT_CHECK_INTERVAL_MS),
+  authToken: z.string().default(''),
+  maxSubscribers: z.natural().min(1).default(DEFAULT_MAX_SUBSCRIBERS),
+  maxBufferedBytes: z.natural().min(1_024).default(DEFAULT_MAX_BUFFERED_BYTES),
 });
 
 export default {
@@ -37,7 +47,7 @@ export default {
   inject: ['webServer'],
   Config,
   apply(ctx: Context, config: Config) {
-    const hub = new SseHub();
+    const hub = new SseHub(config.maxSubscribers, config.maxBufferedBytes);
     const thresholds: Record<AlertReason, number> = {
       cpu: config.cpuWarning,
       memory: config.memoryWarning,
@@ -49,8 +59,12 @@ export default {
     ctx.effect(() => ctx.webServer.register({
       kind: 'exact',
       path: '/api/status',
-      handler: (_req, res) => {
+      handler: (req, res) => {
         try {
+          if (!isAuthorized(req, config.authToken)) {
+            sendJson(res, 401, { ok: false, error: 'unauthorized' });
+            return;
+          }
           sendJson(res, 200, collectStatus(ctx));
         } catch (error) {
           sendJson(res, 500, { ok: false, error: error instanceof Error ? error.message : String(error) });
@@ -63,6 +77,10 @@ export default {
       path: '/api/status/events',
       handler: (req: IncomingMessage, res: StatusResponse) => {
         try {
+          if (!isAuthorized(req, config.authToken)) {
+            sendJson(res, 401, { ok: false, error: 'unauthorized' });
+            return;
+          }
           hub.attach(req, res, collectStatus(ctx), monitor.current());
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
@@ -93,6 +111,7 @@ export default {
       return () => {
         clearInterval(heartbeat);
         clearInterval(sampler);
+        hub.dispose();
       };
     });
   },

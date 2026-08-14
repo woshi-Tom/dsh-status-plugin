@@ -110,6 +110,20 @@ Default thresholds (configurable via the plugin config in the profile's cordis.y
 | `hysteresis` | `0.1` | recovery margin: an alert clears only below `threshold × (1 − hysteresis)` |
 | `heartbeatMs` | `30000` | snapshot push interval |
 | `checkIntervalMs` | `5000` | alert monitor sampling interval |
+| `authToken` | `''` | shared secret required on both routes; empty disables auth. See [Authentication](#authentication) |
+| `maxSubscribers` | `32` | SSE subscriber cap; new connections over the cap fail with an error response |
+| `maxBufferedBytes` | `65536` | per-subscriber write-buffer high-water mark; a slow consumer over it is dropped |
+
+### Authentication
+
+When `authToken` is set, both routes require it. The token can travel in either channel:
+
+- `GET /api/status` — `Authorization: Bearer <token>` header, or `?token=<token>`.
+- `GET /api/status/events` — `?token=<token>` query parameter; a native `EventSource` cannot set custom headers.
+
+A rejected request answers `401` with `{ "ok": false, "error": "unauthorized" }`. Comparison is constant-time (`crypto.timingSafeEqual`), so a wrong token does not leak its length. Because the query parameter can appear in logs and history, prefer header auth for `GET /api/status` and keep the SSE stream on a loopback-only webserver.
+
+The built-in browser badge has no channel to receive the host's token (the client manifest cannot read the host config), so enabling `authToken` disables the badge's status views; a custom UI can authenticate by sending the header/query token above. Instances that need the bundled UI should leave `authToken` empty (the default) and rely on the webserver's loopback binding.
 
 The browser side subscribes with a native `EventSource` (auto-reconnects on drop) and renders:
 
@@ -124,6 +138,7 @@ The browser side subscribes with a native `EventSource` (auto-reconnects on drop
 - `pluginInventory` is optional: when the service is absent, `plugins.entries` is `[]` rather than an error.
 - Response handlers and both periodic timers (heartbeat and alert sampler) are exception-isolated: a throwing collection is logged, never propagated as an uncaught exception that could crash the harness the plugin monitors.
 - Responses carry `cache-control: no-store` (runtime data must not be cached); the SSE stream uses `text/event-stream` with `x-accel-buffering: no`.
+- SSE streams are bounded: at most `maxSubscribers` concurrent streams; a subscriber whose write buffer exceeds `maxBufferedBytes` (or whose socket write stalls) is dropped so a slow consumer cannot pin the process. Plugin teardown ends every open stream.
 
 ## Requirements
 

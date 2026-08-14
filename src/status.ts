@@ -36,6 +36,7 @@ export interface StatusResponse {
   writeHead(status: number, headers: Record<string, string>): void;
   write(chunk: string, callback: (error?: Error | null) => void): boolean;
   end(body: string): void;
+  writableLength: number;
 }
 
 /** Route registration accepted by the webServer service. */
