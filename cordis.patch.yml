@@ -1,0 +1,7 @@
+# The dsh-status-plugin bundle patch: one insert row loading the plugin under
+# the `status` entry id. Applied after the base and web-app bundle layers, so
+# the `webServer` service is available at activation time.
+
+- insert:
+    - id: status
+      name: 'dsh-status-plugin'
