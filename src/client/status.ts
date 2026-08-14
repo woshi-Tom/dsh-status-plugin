@@ -10,12 +10,17 @@ export interface StatusPayload {
     cwd: string;
     uptimeSeconds: number;
     loadAvg: number[];
+    cpuPercent: number;
     memory: {
       rss: number;
       heapTotal: number;
       heapUsed: number;
     };
-    totalMem: number;
+    systemMemory: {
+      total: number;
+      free: number;
+      used: number;
+    };
   };
   webServer: {
     host: string;
@@ -39,7 +44,7 @@ export interface StatusPayload {
 /** One alert transition pushed by the host monitor. */
 export interface AlertEvent {
   active: boolean;
-  reason: 'load' | 'memory';
+  reason: 'cpu' | 'memory';
   value: number;
   threshold: number;
 }
@@ -63,12 +68,13 @@ export function formatBytes(bytes: number): string {
   return `${value >= 100 ? value.toFixed(0) : value.toFixed(1)} ${unit}`
 }
 
-/** Format a duration in seconds as "1h 23m" (or "45s" under a minute). */
+/** Format a duration in seconds as "1h 23m" ("45s" under a minute). */
 export function formatUptime(seconds: number): string {
-  const totalMinutes = Math.floor(seconds / 60)
-  const hours = Math.floor(totalMinutes / 60)
-  const minutes = totalMinutes % 60
-  if (hours === 0) return `${Math.max(totalMinutes, 1)}m`
+  const safe = Math.max(0, Math.floor(seconds))
+  if (safe < 60) return `${safe}s`
+  const hours = Math.floor(safe / 3600)
+  const minutes = Math.floor((safe % 3600) / 60)
+  if (hours === 0) return `${minutes}m`
   return `${hours}h ${minutes}m`
 }
 

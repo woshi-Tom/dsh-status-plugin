@@ -8,8 +8,8 @@
 - **Client 平面** — Web UI（会话右上角）的头部徽标：显示运行时长，点击展开详情面板；当 host 上报过载或内存压力告警时弹出提示。
 
 - **包名**：`dsh-status-plugin`
-- **运行时**：host + 浏览器 bundle（ESM），使用 `tsc` + esbuild 构建到 `lib/`。
-- **语言**：TypeScript（ESM）。
+- **运行时**：host（ESM）+ 浏览器 bundle（CJS factory，按 dsh client-modules 的 `__ModuleLoader__` 契约包装），使用 `tsc` + esbuild 构建到 `lib/`。
+- **语言**：TypeScript。
 
 ## 安装
 
@@ -53,7 +53,9 @@ GET /api/status/events   # Server-Sent Events 流
     "cwd": "/root/.dsh",
     "uptimeSeconds": 3600,
     "loadAvg": [0.1, 0.1, 0.1],
+    "cpuPercent": 12.4,
     "memory": { "rss": 123456, "heapTotal": 654321, "heapUsed": 432100, "external": 12345 },
+    "systemMemory": { "total": 17179869184, "free": 4294967296, "used": 12884901888 },
     "lanAddresses": ["192.168.5.227"]
   },
   "webServer": {
@@ -77,9 +79,9 @@ GET /api/status/events   # Server-Sent Events 流
 
 | 字段 | 来源 |
 |---|---|
-| `host.*` | `process` + `node:os`（pid、运行时长、内存、负载、LAN IPv4 地址） |
+| `host.*` | `process` + `node:os`（pid、运行时长、进程内存、LAN IPv4 地址）；`cpuPercent` 是基于 `os.cpus()` 增量采样得到的 CPU 利用率，全平台可用；`loadAvg` 是 Unix 负载均值——在 Windows 上恒为 `[0, 0, 0]`；`systemMemory.*` 是机器级内存（`os.totalmem()` − `os.freemem()`） |
 | `webServer.*` | `ctx.webServer`（绑定 host 与实际监听端口） |
-| `apiKey` | `DEEPSEEK_API_KEY` 在 `process.env`，否则依次在 `~/.env` 或 `$DSH_HOME/.env` 中检查（按 loadLayeredEnv 优先级）——**只报告是否存在，绝不报告值** |
+| `apiKey` | `DEEPSEEK_API_KEY` 在 `process.env`，否则依次在 `~/.env` 或 `$DSH_HOME/.env` 中检查（按 loadLayeredEnv 优先级）——**只报告是否存在，绝不报告值**；空赋值（如 `DEEPSEEK_API_KEY=""`）不算已配置 |
 | `plugins.entries` | `ctx.pluginInventory.list()`（Cordis Loader 条目的实时状态） |
 
 API Key 检查只报告 key 是否已配置及其来源；值本身永远不会离开进程。
@@ -88,23 +90,24 @@ API Key 检查只报告 key 是否已配置及其来源；值本身永远不会�
 
 host 向已打开的浏览器流推送——由服务器决定页面何时需要新状态，空闲页面零请求：
 
-- **`snapshot`** — 完整状态快照，连接时立即发送，之后每 `heartbeatMs`（默认 30 秒）一次。每个快照卡片分解为 `host.*` 中的 `loadAvg` 与内存字段，供告警驱动的 UI 使用。
-- **`alert`** — 指标越过阈值（进入告警）或恢复（离开告警）时发送。每次状态转换都发送，并在**连接时重新同步**，因此中途打开的页面也能得知正在进行的告警：
+- **`snapshot`** — 完整状态快照，连接时立即发送，之后每 `heartbeatMs`（默认 30 秒）一次。每个快照卡片分解为 `host.*` 中的 `cpuPercent`、`loadAvg`、`systemMemory` 与进程内存字段，供告警驱动的 UI 使用。
+- **`alert`** — 指标进入或离开告警区间时发送。进入需要 `value > threshold`；激活中的告警只有在值回落到 `threshold × (1 − hysteresis)` 以下才解除，因此徘徊在阈值附近的值不会反复翻转。每次状态转换都发送，并在**连接时重新同步**，因此中途打开的页面也能得知正在进行的告警：
 
 ```
 event: snapshot
 data: {"ok":true,"timestamp":"...","host":{...},"plugins":{...}}
 
 event: alert
-data: {"active":true,"reason":"load","value":4.39,"threshold":2}
+data: {"active":true,"reason":"cpu","value":0.87,"threshold":0.8}
 ```
 
 默认阈值（可通过 profile 的 cordis.yml 中插件配置覆盖）：
 
 | 配置 | 默认值 | 含义 |
 |---|---|---|
-| `loadWarning` | `2` | 1 分钟负载均值超过该值时触发过载告警 |
-| `memoryWarning` | `0.85` | RSS 占总内存比例超过该值时触发内存告警 |
+| `cpuWarning` | `0.8` | CPU 利用率超过该值时触发 CPU 过载告警 |
+| `memoryWarning` | `0.85` | 系统内存压力超过该值时触发内存告警 |
+| `hysteresis` | `0.1` | 恢复余量：告警只在值低于 `threshold × (1 − hysteresis)` 时解除 |
 | `heartbeatMs` | `30000` | 快照推送间隔 |
 | `checkIntervalMs` | `5000` | 告警监控采样间隔 |
 
@@ -112,12 +115,14 @@ data: {"active":true,"reason":"load","value":4.39,"threshold":2}
 
 - 会话头部的一个紧凑徽标（状态圆点 + 运行时长，点击展开）；
 - 详情面板：进程/资源/服务/插件四个分区与最近更新时间；
-- 每次告警转换弹出 toast（6 秒自动消失），告警激活期间徽标脉冲闪烁。
+- 每次告警转换弹出 toast（6 秒自动消失），告警激活期间徽标脉冲闪烁；
+- 流断开且 90 秒未收到快照时圆点变灰——监控组件在失联时必须显示"未知"，而不是继续显示"健康"。
 
 ### 失败行为
 
 - 处理器内收集错误返回 `500`，带 `{ "ok": false, "error": "<message>" }` ——结构化的、不泄漏堆栈、绝不挂起 socket。
 - `pluginInventory` 可选：服务缺失时 `plugins.entries` 返回 `[]` 而不是报错。
+- 响应处理器与两个周期定时器（heartbeat 与告警采样）都做了异常隔离：收集抛错只记日志，绝不作为 uncaughtException 传播出去导致被监控的 harness 崩溃。
 - 响应携带 `cache-control: no-store`（运行时数据不可缓存）；SSE 流使用 `text/event-stream` 并带 `x-accel-buffering: no`。
 
 ## 环境要求
@@ -125,13 +130,15 @@ data: {"active":true,"reason":"load","value":4.39,"threshold":2}
 - 带 web bundle（`@deepseek-ai/dsh-web-app`）的 dsh profile——提供 `ctx.webServer` 和 `ctx.pluginInventory`。
 - Node `^22.19 || >=24`。
 - 浏览器入口渲染在会话头部（`conversation.session.header.utilities` 槽位）；空白/首页不显示。
+- 面板中的负载均值行是 Unix 概念：Windows 上恒为 `0.00`。CPU 利用率与内存指标全平台可用。
 
 ## 开发
 
 ```sh
 pnpm install
 pnpm run build          # host tsc + client 类型检查 + esbuild bundle
-npm pack --dry-run      # 验证 tarball 内容（files 白名单）
+pnpm test               # vitest 单元测试
+npm pack --dry-run      # 验证 tarball 内容（prepack 会自动执行构建）
 ```
 
 ## 发布

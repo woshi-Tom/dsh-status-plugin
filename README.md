@@ -8,8 +8,8 @@ A status plugin for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-h
 - **Client plane** — a header badge in the web UI (top-right of a conversation session) that shows uptime, opens a detail panel, and raises toasts when the host reports overload or memory-pressure alerts.
 
 - **Package**: `dsh-status-plugin`
-- **Runtime**: host + browser bundle (ESM), built with `tsc` + esbuild to `lib/`.
-- **Language**: TypeScript (ESM).
+- **Runtime**: host (ESM) + browser bundle (a CJS factory wrapped for the dsh client-modules `__ModuleLoader__` contract), built with `tsc` + esbuild to `lib/`.
+- **Language**: TypeScript.
 
 ## Install
 
@@ -53,7 +53,9 @@ Example response:
     "cwd": "/root/.dsh",
     "uptimeSeconds": 3600,
     "loadAvg": [0.1, 0.1, 0.1],
+    "cpuPercent": 12.4,
     "memory": { "rss": 123456, "heapTotal": 654321, "heapUsed": 432100, "external": 12345 },
+    "systemMemory": { "total": 17179869184, "free": 4294967296, "used": 12884901888 },
     "lanAddresses": ["192.168.5.227"]
   },
   "webServer": {
@@ -77,9 +79,9 @@ Example response:
 
 | Field | Source |
 |---|---|
-| `host.*` | `process` + `node:os` (pid, uptime, memory, load, LAN IPv4 addresses) |
+| `host.*` | `process` + `node:os` (pid, uptime, process memory, LAN IPv4 addresses); `cpuPercent` is CPU utilization sampled from `os.cpus()` deltas and works on every platform; `loadAvg` is the Unix load average — always `[0, 0, 0]` on Windows; `systemMemory.*` is machine-wide memory (`os.totalmem()` − `os.freemem()`) |
 | `webServer.*` | `ctx.webServer` (bind host and actual listening port) |
-| `apiKey` | `DEEPSEEK_API_KEY` in `process.env`, else the working directory `.env`, `~/.env`, or `$DSH_HOME/.env` (checked in loadLayeredEnv priority order) — **presence only, never the value** |
+| `apiKey` | `DEEPSEEK_API_KEY` in `process.env`, else the working directory `.env`, `~/.env`, or `$DSH_HOME/.env` (checked in loadLayeredEnv priority order) — **presence only, never the value**; an empty assignment (`` DEEPSEEK_API_KEY="" ``) does not count as configured |
 | `plugins.entries` | `ctx.pluginInventory.list()` (live Cordis Loader entry state) |
 
 The API key check reports only whether a key is configured and where it was found; the value itself never leaves the process.
@@ -88,23 +90,24 @@ The API key check reports only whether a key is configured and where it was foun
 
 The host pushes to open browser streams — the server decides when the page needs new state, so idle pages make zero requests:
 
-- **`snapshot`** — a full status snapshot, emitted immediately on connect and then every `heartbeatMs` (default 30 s). Each snapshot card dissects to `loadAvg` and memory fields inside `host.*` for alert-driven UIs.
-- **`alert`** — emitted when an indicator crosses its threshold (entering alert) or recovers (leaving alert). Emitted on every transition and **re-synchronized on connect** so a page that opens mid-alert still learns about it:
+- **`snapshot`** — a full status snapshot, emitted immediately on connect and then every `heartbeatMs` (default 30 s). Each snapshot card dissects to `cpuPercent`, `loadAvg`, `systemMemory`, and process-memory fields inside `host.*` for alert-driven UIs.
+- **`alert`** — emitted when an indicator enters or leaves its alert band. Entering requires `value > threshold`; an active alert only clears when the value drops below `threshold × (1 − hysteresis)`, so a value hovering near the threshold does not flap. Events are emitted on every transition and **re-synchronized on connect** so a page that opens mid-alert still learns about it:
 
 ```
 event: snapshot
 data: {"ok":true,"timestamp":"...","host":{...},"plugins":{...}}
 
 event: alert
-data: {"active":true,"reason":"load","value":4.39,"threshold":2}
+data: {"active":true,"reason":"cpu","value":0.87,"threshold":0.8}
 ```
 
 Default thresholds (configurable via the plugin config in the profile's cordis.yml):
 
 | Config | Default | Meaning |
 |---|---|---|
-| `loadWarning` | `2` | 1-minute load average above which an overload alert fires |
-| `memoryWarning` | `0.85` | RSS share of total memory above which a memory alert fires |
+| `cpuWarning` | `0.8` | CPU utilization above which a CPU overload alert fires |
+| `memoryWarning` | `0.85` | system memory pressure above which a memory alert fires |
+| `hysteresis` | `0.1` | recovery margin: an alert clears only below `threshold × (1 − hysteresis)` |
 | `heartbeatMs` | `30000` | snapshot push interval |
 | `checkIntervalMs` | `5000` | alert monitor sampling interval |
 
@@ -112,12 +115,14 @@ The browser side subscribes with a native `EventSource` (auto-reconnects on drop
 
 - a compact badge in the conversation header (status dot + uptime, click to open);
 - a detail panel with process/resource/service/plugin sections and the last update time;
-- a toast on every alert transition (auto-dismisses after 6 s) plus a pulsing badge while an alert is active.
+- a toast on every alert transition (auto-dismisses after 6 s) plus a pulsing badge while an alert is active;
+- a gray badge dot when the stream is disconnected or no snapshot arrived for 90 s — a monitoring widget must say *unknown*, not *healthy*, when it loses contact.
 
 ### Failure behavior
 
 - A collection error inside the handler returns `500` with `{ "ok": false, "error": "<message>" }` — structured, no stack leak, never a hung socket.
 - `pluginInventory` is optional: when the service is absent, `plugins.entries` is `[]` rather than an error.
+- Response handlers and both periodic timers (heartbeat and alert sampler) are exception-isolated: a throwing collection is logged, never propagated as an uncaught exception that could crash the harness the plugin monitors.
 - Responses carry `cache-control: no-store` (runtime data must not be cached); the SSE stream uses `text/event-stream` with `x-accel-buffering: no`.
 
 ## Requirements
@@ -125,13 +130,15 @@ The browser side subscribes with a native `EventSource` (auto-reconnects on drop
 - dsh profile with the web bundle (`@deepseek-ai/dsh-web-app`) — provides `ctx.webServer` and `ctx.pluginInventory`.
 - Node `^22.19 || >=24`.
 - The browser entry renders in the conversation session header (`conversation.session.header.utilities` slot); it is not shown on the empty/home screen.
+- The load-average row in the panel is a Unix concept: on Windows it is always `0.00`. CPU utilization and memory metrics work on every platform.
 
 ## Development
 
 ```sh
 pnpm install
 pnpm run build          # host tsc + client typecheck + esbuild bundle
-npm pack --dry-run      # verify tarball contents (files whitelist)
+pnpm test               # vitest unit tests
+npm pack --dry-run      # verify tarball contents (prepack runs the build)
 ```
 
 ## Publish

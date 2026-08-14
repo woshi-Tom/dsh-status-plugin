@@ -10,7 +10,10 @@ export interface StatusBadgeInjected {
   /** Read a fresh status snapshot over HTTP. */
   fetchStatus: () => Promise<StatusPayload>
   /** Subscribe to the status SSE stream; returns an unsubscribe function. */
-  subscribe: (onEvent: (event: StatusEvent) => void) => () => void
+  subscribe: (
+    onEvent: (event: StatusEvent) => void,
+    onConnectionChange: (connected: boolean) => void,
+  ) => () => void
 }
 
 /** Full component props assembled by the header slot renderer. */
@@ -23,19 +26,23 @@ export type StatusBadgeProps =
 type Toast = { kind: 'alert' | 'recovered'; event: AlertEvent }
 
 const TOAST_DISMISS_MS = 6_000
+/** Mark the stream disconnected after this long without any snapshot (3× the default heartbeat). */
+const STALE_AFTER_MS = 90_000
 
 /** Render the compact header status badge and its click-to-open panel. */
 export function StatusBadge({ fetchStatus, subscribe, t }: StatusBadgeProps): ReactNode {
   const [snapshot, setSnapshot] = useState<StatusPayload | null>(null)
   const [error, setError] = useState(false)
+  const [connected, setConnected] = useState(true)
   const [alerts, setAlerts] = useState<Partial<Record<AlertEvent['reason'], AlertEvent>>>({})
   const [toast, setToast] = useState<Toast | null>(null)
   const [open, setOpen] = useState(false)
 
   useEffect(() => {
     let mounted = true
+    let lastSnapshotAt = Date.now()
     void fetchStatus().then(
-      (payload) => { if (mounted) { setSnapshot(payload); setError(false) } },
+      (payload) => { if (mounted) { setSnapshot(payload); setError(false); lastSnapshotAt = Date.now() } },
       () => { if (mounted) setError(true) },
     )
     const unsubscribe = subscribe((event) => {
@@ -43,6 +50,8 @@ export function StatusBadge({ fetchStatus, subscribe, t }: StatusBadgeProps): Re
       if (event.type === 'snapshot') {
         setSnapshot(event.payload)
         setError(false)
+        setConnected(true)
+        lastSnapshotAt = Date.now()
         return
       }
       const alert = event.payload
@@ -58,10 +67,14 @@ export function StatusBadge({ fetchStatus, subscribe, t }: StatusBadgeProps): Re
         })
         setToast({ kind: 'recovered', event: alert })
       }
-    })
+    }, setConnected)
+    const staleness = setInterval(() => {
+      if (mounted && Date.now() - lastSnapshotAt > STALE_AFTER_MS) setConnected(false)
+    }, STALE_AFTER_MS)
     return () => {
       mounted = false
       unsubscribe()
+      clearInterval(staleness)
     }
   }, [fetchStatus, subscribe])
 
@@ -80,22 +93,24 @@ export function StatusBadge({ fetchStatus, subscribe, t }: StatusBadgeProps): Re
     )
   }, [fetchStatus])
 
+  const state = !connected ? 'disconnected' : alerting ? 'alert' : 'healthy'
+
   return (
     <div className={css.badgeRoot}>
       {toast !== null ? (
         <div className={css.toast} data-kind={toast.kind} role="status">
           <strong>{toast.kind === 'alert' ? t('alertActive') : t('alertRecovered')}</strong>
-          <span>{toast.event.reason === 'load' ? t('alertLoad') : t('alertMemory')}</span>
+          <span>{toast.event.reason === 'cpu' ? t('alertCpu') : t('alertMemory')}</span>
           <button type="button" className={css.toastClose} aria-label={t('close')} onClick={() => setToast(null)}>×</button>
         </div>
       ) : null}
       <button
         type="button"
         className={css.badge}
-        data-state={alerting ? 'alert' : 'healthy'}
+        data-state={state}
         data-open={open ? 'true' : undefined}
         aria-expanded={open}
-        aria-label={`${t('clickForDetails')}${alerting ? `, ${t('alerting')}` : ''}`}
+        aria-label={`${t('clickForDetails')}${!connected ? `, ${t('disconnected')}` : alerting ? `, ${t('alerting')}` : ''}`}
         onClick={() => setOpen(current => !current)}
       >
         <span className={css.dot} aria-hidden="true" />
@@ -109,6 +124,7 @@ export function StatusBadge({ fetchStatus, subscribe, t }: StatusBadgeProps): Re
           t={t}
           snapshot={snapshot}
           alerts={alerts}
+          connected={connected}
           error={error}
           loading={snapshot === null && !error}
           onRetry={retry}

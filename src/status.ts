@@ -1,8 +1,9 @@
-import { homedir, hostname, loadavg, networkInterfaces, totalmem } from 'node:os';
+import { freemem, homedir, hostname, loadavg, networkInterfaces, totalmem } from 'node:os';
 import { join } from 'node:path';
 import { readFileSync } from 'node:fs';
 import type { IncomingMessage } from 'node:http';
 import type { Context } from '@deepseek-ai/cordis';
+import { cpuUtilization } from './cpu.js';
 
 /** Node process memory snapshot (os-independent subset of process.memoryUsage). */
 export interface MemoryUsage {
@@ -71,8 +72,13 @@ export interface StatusPayload {
     cwd: string;
     uptimeSeconds: number;
     loadAvg: number[];
+    cpuPercent: number;
     memory: MemoryUsage;
-    totalMem: number;
+    systemMemory: {
+      total: number;
+      free: number;
+      used: number;
+    };
     lanAddresses: string[];
   };
   webServer: {
@@ -87,15 +93,20 @@ export interface StatusPayload {
   plugins: PluginInventorySnapshot;
 }
 
-/** A single lines-without-`export` prefix DEEPSEEK_API_KEY assignment. */
-const API_KEY_PATTERN = /^\s*(?:export\s+)?DEEPSEEK_API_KEY=.+/;
+/** A lines-without-`export` prefix DEEPSEEK_API_KEY assignment with a non-empty value (quotes count only with content). */
+const API_KEY_PATTERN = /^\s*(?:export\s+)?DEEPSEEK_API_KEY=\s*(?:"[^"]+"|'[^']+'|[^\s"']+)/;
+
+/** True when a `.env` line assigns a non-empty DEEPSEEK_API_KEY value. */
+export function lineLooksLikeApiKey(line: string): boolean {
+  return API_KEY_PATTERN.test(line);
+}
 
 /** First candidate file containing a DEEPSEEK_API_KEY assignment, or null. */
 function firstApiKeyFile(...candidates: string[]): string | null {
   for (const candidate of candidates) {
     try {
       const content = readFileSync(candidate, 'utf8');
-      if (content.split(/\r?\n/).some((line) => API_KEY_PATTERN.test(line))) return candidate;
+      if (content.split(/\r?\n/).some(lineLooksLikeApiKey)) return candidate;
     } catch {
       continue;
     }
@@ -129,6 +140,8 @@ export function collectStatus(ctx: Context): StatusPayload {
   const memory = process.memoryUsage();
   const webServer = ctx.webServer;
   const inventory = (ctx.reflect.get('pluginInventory', false) as PluginInventoryService | undefined)?.list?.() ?? { entries: [] };
+  const total = totalmem();
+  const free = freemem();
   return {
     ok: true,
     timestamp: new Date().toISOString(),
@@ -141,13 +154,14 @@ export function collectStatus(ctx: Context): StatusPayload {
       cwd: process.cwd(),
       uptimeSeconds: Math.round(process.uptime()),
       loadAvg: loadavg(),
+      cpuPercent: cpuUtilization(),
       memory: {
         rss: memory.rss,
         heapTotal: memory.heapTotal,
         heapUsed: memory.heapUsed,
         external: memory.external,
       },
-      totalMem: totalmem(),
+      systemMemory: { total, free, used: total - free },
       lanAddresses: collectLanAddresses(),
     },
     webServer: {

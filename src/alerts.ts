@@ -1,7 +1,8 @@
-import { loadavg, totalmem } from 'node:os';
+import { freemem, totalmem } from 'node:os';
+import { cpuUtilization } from './cpu.js';
 
-/** A measurable health indicator of the host process. */
-export type AlertReason = 'load' | 'memory';
+/** A measurable health indicator of the host. */
+export type AlertReason = 'cpu' | 'memory';
 
 /** A single alert transition broadcast to subscribers. */
 export interface AlertEvent {
@@ -11,32 +12,58 @@ export interface AlertEvent {
   threshold: number;
 }
 
+/** Per-reason value samplers, injectable for tests. */
+export interface AlertSamplers {
+  cpu: () => number;
+  memory: () => number;
+}
+
+/** System memory pressure as a fraction of total memory (0..1). */
+export function computeSystemUsage(total: number, free: number): number {
+  if (total <= 0) return 0;
+  return (total - free) / total;
+}
+
+/** Current system memory pressure (0..1), sampled live. */
+export function systemMemoryUsage(): number {
+  return computeSystemUsage(totalmem(), freemem());
+}
+
 /**
  * Threshold monitor for host health indicators. Runs a periodic check over
- * load average and memory usage; emits an event only when an indicator
- * crosses its threshold (entering alert) or recovers (leaving alert), never
- * on unchanged state. Thresholds are deployment config, not constants.
+ * CPU utilization and system memory pressure; emits an event only when an
+ * indicator crosses its band (entering alert) or recovers (leaving alert),
+ * never on unchanged state. Thresholds are deployment config, not constants.
+ * An active alert clears only when the value drops below
+ * `threshold * (1 - hysteresis)`, so a value hovering around the threshold
+ * does not flap between alert and recovery on consecutive polls.
  */
 export class AlertMonitor {
   private readonly active = new Set<AlertReason>();
+  private readonly lastValue = new Map<AlertReason, number>();
+  private readonly samplers: AlertSamplers;
 
   /**
    * Create the monitor.
-   * @param thresholds - per-reason thresholds; load is a 1-minute load-average
-   * value, memory a fraction of total memory (0..1).
+   * @param thresholds - per-reason thresholds as fractions (0..1): `cpu` is
+   * the sampled CPU utilization, `memory` the system memory pressure.
+   * @param hysteresis - recovery margin as a fraction of the threshold.
    * @param check - called for every status transition (enter or leave).
+   * @param samplers - value sources; defaults to live CPU/memory sampling.
    */
   constructor(
     private readonly thresholds: Record<AlertReason, number>,
+    private readonly hysteresis: number,
     private readonly check: (event: AlertEvent) => void,
-  ) {}
+    samplers?: AlertSamplers,
+  ) {
+    this.samplers = samplers ?? { cpu: () => cpuUtilization() / 100, memory: systemMemoryUsage };
+  }
 
-  /** Sample the current load average and memory usage against the thresholds. */
+  /** Sample CPU utilization and memory pressure against the thresholds. */
   poll(): void {
-    const load = loadavg()[0] ?? 0;
-    const memoryUsed = process.memoryUsage().rss / Math.max(totalmem(), 1);
-    this.pollReason('load', load);
-    this.pollReason('memory', memoryUsed);
+    this.pollReason('cpu', this.samplers.cpu());
+    this.pollReason('memory', this.samplers.memory());
   }
 
   /** Current threshold-breach events, for synchronizing new SSE subscribers. */
@@ -44,16 +71,20 @@ export class AlertMonitor {
     return [...this.active].map(reason => ({
       active: true,
       reason,
-      value: reason === 'load' ? (loadavg()[0] ?? 0) : process.memoryUsage().rss / Math.max(totalmem(), 1),
+      value: this.lastValue.get(reason) ?? 0,
       threshold: this.thresholds[reason],
     }));
   }
 
   /** Compare one indicator and emit a transition event when its state flips. */
   private pollReason(reason: AlertReason, value: number): void {
+    this.lastValue.set(reason, value);
     const threshold = this.thresholds[reason];
-    const isAlert = value > threshold;
-    if (isAlert === this.active.has(reason)) return;
+    const wasAlert = this.active.has(reason);
+    const isAlert = wasAlert
+      ? value >= threshold * (1 - this.hysteresis)
+      : value > threshold;
+    if (isAlert === wasAlert) return;
     if (isAlert) this.active.add(reason);
     else this.active.delete(reason);
     this.check({ active: isAlert, reason, value, threshold });

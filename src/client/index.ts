@@ -44,7 +44,10 @@ export function apply(ctx: ClientContext): void {
     return await response.json() as StatusPayload
   }
 
-  const subscribe = (onEvent: (event: StatusEvent) => void): (() => void) => {
+  const subscribe = (
+    onEvent: (event: StatusEvent) => void,
+    onConnectionChange: (connected: boolean) => void,
+  ): (() => void) => {
     const source = new EventSource(eventsUrl)
     source.addEventListener('snapshot', (event) => {
       onEvent({ type: 'snapshot', payload: JSON.parse((event as MessageEvent).data) })
@@ -52,6 +55,8 @@ export function apply(ctx: ClientContext): void {
     source.addEventListener('alert', (event) => {
       onEvent({ type: 'alert', payload: JSON.parse((event as MessageEvent).data) })
     })
+    source.addEventListener('open', () => onConnectionChange(true))
+    source.addEventListener('error', () => onConnectionChange(false))
     return () => source.close()
   }
 
