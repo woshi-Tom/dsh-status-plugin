@@ -16,6 +16,14 @@
   "publishConfig": {
     "access": "public"
   },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/woshi-Tom/dsh-status-plugin.git"
+  },
+  "homepage": "https://github.com/woshi-Tom/dsh-status-plugin#readme",
+  "bugs": {
+    "url": "https://github.com/woshi-Tom/dsh-status-plugin/issues"
+  },
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",
