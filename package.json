@@ -55,7 +55,8 @@
   "scripts": {
     "build": "tsc -p tsconfig.json && tsc -p tsconfig.client.json && node scripts/build-client.mjs",
     "build:host": "tsc -p tsconfig.json",
-    "build:client": "tsc -p tsconfig.client.json && node scripts/build-client.mjs"
+    "build:client": "tsc -p tsconfig.client.json && node scripts/build-client.mjs",
+    "prepublishOnly": "tsc -p tsconfig.json && tsc -p tsconfig.client.json && node scripts/build-client.mjs"
   },
   "license": "MIT",
   "dsh": {
