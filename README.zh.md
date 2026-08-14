@@ -27,6 +27,8 @@ Client manifest（`package.json` → `dsh.client`）声明了浏览器入口；p
 
 ## 用法
 
+<img width="2560" height="1313" alt="abcddf52074cd98f465253a6619de744" src="https://github.com/user-attachments/assets/c6c6e322-4a11-425d-9682-6b5f48f05b7a" />
+
 插件在 profile 的 web 服务器上注册两个精确路由：
 
 ```
