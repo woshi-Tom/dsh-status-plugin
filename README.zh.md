@@ -17,10 +17,16 @@
 dsh plugin --profile web add dsh-status-plugin
 ```
 
-CLI 会自动协调 `dsh.profile.bundles`：因为 manifest 声明了 `dsh.bundle.patch`，该包会加入 profile 的 bundle 层栈。重启 profile 以加载：
+CLI 会自动协调 `dsh.profile.bundles`：因为 manifest 声明了 `dsh.bundle.patch`，该包会加入 profile 的 bundle 层栈。停止正在运行的进程并重启 profile 以加载：
 
 ```sh
-dsh-manage.sh restart   # 或：dsh web
+dsh web   # 或：dsh --profile <name>
+```
+
+无需启动即可验证插件已加入组合树：
+
+```sh
+dsh --profile web --dump-config
 ```
 
 Client manifest（`package.json` → `dsh.client`）声明了浏览器入口；profile 的 client-modules 扫描器会自动拾取并注入 `dsh-status-plugin/client.js` 到 Web 应用——无需任何 bundle 或 overlay 配置。

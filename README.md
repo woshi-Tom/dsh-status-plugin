@@ -17,10 +17,16 @@ A status plugin for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-h
 dsh plugin --profile web add dsh-status-plugin
 ```
 
-The CLI reconciles `dsh.profile.bundles` automatically: because the manifest declares `dsh.bundle.patch`, the package joins the profile's bundle layer stack. Restart the profile to load it:
+The CLI reconciles `dsh.profile.bundles` automatically: because the manifest declares `dsh.bundle.patch`, the package joins the profile's bundle layer stack. Stop the running process and restart the profile to load it:
 
 ```sh
-dsh-manage.sh restart   # or: dsh web
+dsh web   # or: dsh --profile <name>
+```
+
+Verify the plugin joined the composed tree without booting:
+
+```sh
+dsh --profile web --dump-config
 ```
 
 The client manifest (`package.json` → `dsh.client`) declares the browser entry; the profile's client-modules scanner picks it up and injects `dsh-status-plugin/client.js` into the web app automatically — no bundle or overlay configuration needed.
