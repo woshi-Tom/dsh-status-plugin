@@ -27,9 +27,9 @@ The client manifest (`package.json` → `dsh.client`) declares the browser entry
 
 ## Usage
 
-The plugin registers two exact routes on the profile's web server:
 <img width="2560" height="1313" alt="abcddf52074cd98f465253a6619de744" src="https://github.com/user-attachments/assets/c6c6e322-4a11-425d-9682-6b5f48f05b7a" />
 
+The plugin registers two exact routes on the profile's web server:
 
 ```
 GET /api/status          # JSON snapshot on demand
