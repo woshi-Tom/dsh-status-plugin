@@ -1,5 +1,7 @@
 # dsh-status-plugin
 
+English | [中文](README.zh.md)
+
 A status plugin for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (dsh). Two planes in one package:
 
 - **Host plane** — HTTP endpoints exposing the running harness's runtime health as JSON: process, listener, API-key presence, memory, uptime, and the live plugin inventory.

@@ -49,6 +49,7 @@
     "cordis.patch.yml",
     "lib/types/**/*.d.ts",
     "README.md",
+    "README.zh.md",
     "LICENSE"
   ],
   "scripts": {
