@@ -11,6 +11,7 @@ export interface StatusPanelProps {
   t: T
   snapshot: StatusPayload | null
   alerts: Partial<Record<AlertEvent['reason'], AlertEvent>>
+  connected: boolean
   loading: boolean
   error: boolean
   onRetry: () => void
@@ -38,7 +39,7 @@ function Section({ title, children }: { title: string; children: ReactNode }): R
 }
 
 /** Render the expanded status panel: alerts, process, resources, service, plugins. */
-export function StatusPanel({ t, snapshot, alerts, loading, error, onRetry, onClose }: StatusPanelProps): ReactNode {
+export function StatusPanel({ t, snapshot, alerts, connected, loading, error, onRetry, onClose }: StatusPanelProps): ReactNode {
   const alertList = Object.values(alerts)
   return (
     <div className={css.panel} role="dialog" aria-label={t('clickForDetails')}>
@@ -47,6 +48,7 @@ export function StatusPanel({ t, snapshot, alerts, loading, error, onRetry, onCl
         <button type="button" className={css.panelClose} aria-label={t('close')} onClick={onClose}>×</button>
       </header>
       {loading ? <p className={css.status}>{t('loading')}</p> : null}
+      {!connected ? <div className={css.failure}><p role="alert">{t('disconnected')}</p></div> : null}
       {error ? (
         <div className={css.failure}>
           <p role="alert">{t('error')}</p>
@@ -60,8 +62,8 @@ export function StatusPanel({ t, snapshot, alerts, loading, error, onRetry, onCl
               <strong>{t('alertActive')}</strong>
               {alertList.map(alert => (
                 <p key={alert.reason}>
-                  {alert.reason === 'load' ? t('alertLoad') : t('alertMemory')}：
-                  {t('alertValue', { value: alert.reason === 'load' ? alert.value.toFixed(2) : formatPercent(alert.value), threshold: alert.reason === 'load' ? alert.threshold.toFixed(2) : formatPercent(alert.threshold) })}
+                  {alert.reason === 'cpu' ? t('alertCpu') : t('alertMemory')}：
+                  {t('alertValue', { value: formatPercent(alert.value), threshold: formatPercent(alert.threshold) })}
                 </p>
               ))}
             </div>
@@ -75,8 +77,10 @@ export function StatusPanel({ t, snapshot, alerts, loading, error, onRetry, onCl
             <Row label={t('cwd')} value={snapshot.host.cwd} />
           </Section>
           <Section title={t('resources')}>
+            <Row label={t('cpu')} value={`${snapshot.host.cpuPercent.toFixed(1)}%`} />
             <Row label={t('loadAverage')} value={snapshot.host.loadAvg.map(value => value.toFixed(2)).join(' / ')} />
-            <Row label={t('memory')} value={`${formatBytes(snapshot.host.memory.rss)} / ${formatBytes(snapshot.host.totalMem)} (${formatPercent(snapshot.host.memory.rss / Math.max(snapshot.host.totalMem, 1))})`} />
+            <Row label={t('systemMemory')} value={`${formatBytes(snapshot.host.systemMemory.used)} / ${formatBytes(snapshot.host.systemMemory.total)} (${formatPercent(snapshot.host.systemMemory.used / Math.max(snapshot.host.systemMemory.total, 1))})`} />
+            <Row label={t('processMemory')} value={formatBytes(snapshot.host.memory.rss)} />
             <Row label={t('heap')} value={`${formatBytes(snapshot.host.memory.heapUsed)} / ${formatBytes(snapshot.host.memory.heapTotal)}`} />
           </Section>
           <Section title={t('service')}>

@@ -1,2 +1,4 @@
 *.tgz
 .npmrc
+lib/
+node_modules/

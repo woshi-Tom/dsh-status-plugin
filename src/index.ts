@@ -5,25 +5,29 @@ import { AlertMonitor, type AlertEvent, type AlertReason } from './alerts.js';
 import { SseHub } from './sse.js';
 import { collectStatus, sendJson, type StatusPayload, type StatusResponse } from './status.js';
 
-/** 1-minute load average at which the host reports an overload alert. */
-const DEFAULT_LOAD_WARNING = 2;
-/** RSS share of total memory above which the host reports a memory alert. */
+/** CPU utilization fraction (0..1) at which the host reports an overload alert. */
+const DEFAULT_CPU_WARNING = 0.8;
+/** System memory pressure fraction (0..1) above which the host reports a memory alert. */
 const DEFAULT_MEMORY_WARNING = 0.85;
+/** Recovery margin as a fraction of each threshold: an alert clears below `threshold * (1 - hysteresis)`. */
+const DEFAULT_HYSTERESIS = 0.1;
 /** Interval between heartbeat snapshot pushes to SSE subscribers. */
 const DEFAULT_HEARTBEAT_MS = 30_000;
 /** Interval between alert monitor samples. */
 const DEFAULT_CHECK_INTERVAL_MS = 5_000;
 
 export interface Config {
-  loadWarning: number;
+  cpuWarning: number;
   memoryWarning: number;
+  hysteresis: number;
   heartbeatMs: number;
   checkIntervalMs: number;
 }
 
 export const Config: z<Config> = z.object({
-  loadWarning: z.number().min(0).default(DEFAULT_LOAD_WARNING),
+  cpuWarning: z.number().min(0).max(1).default(DEFAULT_CPU_WARNING),
   memoryWarning: z.number().min(0).max(1).default(DEFAULT_MEMORY_WARNING),
+  hysteresis: z.number().min(0).max(0.5).default(DEFAULT_HYSTERESIS),
   heartbeatMs: z.number().min(1_000).default(DEFAULT_HEARTBEAT_MS),
   checkIntervalMs: z.number().min(1_000).default(DEFAULT_CHECK_INTERVAL_MS),
 });
@@ -35,10 +39,10 @@ export default {
   apply(ctx: Context, config: Config) {
     const hub = new SseHub();
     const thresholds: Record<AlertReason, number> = {
-      load: config.loadWarning,
+      cpu: config.cpuWarning,
       memory: config.memoryWarning,
     };
-    const monitor = new AlertMonitor(thresholds, (event: AlertEvent) => {
+    const monitor = new AlertMonitor(thresholds, config.hysteresis, (event: AlertEvent) => {
       hub.broadcast('alert', event);
     });
 
@@ -68,11 +72,22 @@ export default {
       },
     }));
 
+    // The monitor must not be able to take down the harness it watches: a
+    // throwing collection inside a timer callback becomes an uncaughtException
+    // and crashes the process, so every timer body is isolated and logged.
     const heartbeat = setInterval(() => {
-      hub.broadcast('snapshot', collectStatus(ctx));
+      try {
+        hub.broadcast('snapshot', collectStatus(ctx));
+      } catch (error) {
+        ctx.logger.warn('status: snapshot collection failed: %s', error instanceof Error ? error.message : String(error));
+      }
     }, config.heartbeatMs);
     const sampler = setInterval(() => {
-      monitor.poll();
+      try {
+        monitor.poll();
+      } catch (error) {
+        ctx.logger.warn('status: alert sampling failed: %s', error instanceof Error ? error.message : String(error));
+      }
     }, config.checkIntervalMs);
     ctx.effect(() => {
       return () => {

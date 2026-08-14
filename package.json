@@ -1,6 +1,6 @@
 {
   "name": "dsh-status-plugin",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "A dsh status plugin with host-plane and browser halves: harness runtime health (process, listener, API-key presence, memory, uptime, plugin inventory) as JSON plus server-pushed SSE alerts, surfaced as a header badge with an expanded panel in the Web UI",
   "keywords": [
     "dsh",
@@ -56,7 +56,8 @@
     "build": "tsc -p tsconfig.json && tsc -p tsconfig.client.json && node scripts/build-client.mjs",
     "build:host": "tsc -p tsconfig.json",
     "build:client": "tsc -p tsconfig.client.json && node scripts/build-client.mjs",
-    "prepublishOnly": "tsc -p tsconfig.json && tsc -p tsconfig.client.json && node scripts/build-client.mjs"
+    "prepack": "pnpm run build",
+    "test": "vitest run"
   },
   "license": "MIT",
   "dsh": {
@@ -95,6 +96,7 @@
     "@types/react": "^18.3.1",
     "esbuild": "^0.25.0",
     "react": "^18.2.0",
-    "typescript": "^5.5.0"
+    "typescript": "^5.5.0",
+    "vitest": "^4.1.10"
   }
 }
