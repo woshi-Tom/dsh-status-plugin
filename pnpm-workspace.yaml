@@ -63,5 +63,3 @@ minimumReleaseAgeExclude:
   - '@deepseek-ai/dsh-compaction@0.1.0-rc.6'
   - '@deepseek-ai/dsh-session-stats@0.1.0-rc.6'
   - '@deepseek-ai/dsh-token-meter@0.1.0-rc.6'
-allowBuilds:
-  esbuild: set this to true or false
