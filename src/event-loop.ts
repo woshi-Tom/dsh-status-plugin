@@ -3,10 +3,17 @@ import { monitorEventLoopDelay } from 'node:perf_hooks';
 /**
  * Event-loop delay histogram. `monitorEventLoopDelay` is not guaranteed on
  * every platform, so creation is guarded and callers get 0 when unavailable.
+ *
+ * Resolution note: the option is the histogram's sampling QUANTUM, not a
+ * threshold. The default (10) makes even a completely idle process report
+ * ~10 ms (measured: 10.2 ms idle), which reads as a bogus stall on healthy
+ * servers. `resolution: 1` keeps the overhead negligible while an idle
+ * process reports ~1 ms, so a real >5 ms delay is visible without alarming
+ * every healthy host.
  */
 let histogram: ReturnType<typeof monitorEventLoopDelay> | null = null;
 try {
-  histogram = monitorEventLoopDelay({ resolution: 10 });
+  histogram = monitorEventLoopDelay({ resolution: 1 });
   histogram.enable();
 } catch {
   histogram = null;
