@@ -10,6 +10,10 @@ jobs:
     permissions:
       contents: read
       id-token: write # npm provenance
+    env:
+      # Job-level so setup-node also sees it and writes it into ~/.npmrc
+      # (pnpm reads the registry auth token from there as well as from env).
+      NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -23,8 +27,9 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm run build
       - run: pnpm test
+      - run: pnpm run lint
       - run: pnpm run check:pack
+      - name: Verify npm credentials
+        run: npm whoami --registry https://registry.npmjs.org
       - name: Publish to npm
         run: pnpm publish --provenance --no-git-checks
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
