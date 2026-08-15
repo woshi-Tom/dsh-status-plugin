@@ -1,3 +1,9 @@
+# Single-package workspace: the root project is the only package. The explicit
+# `packages` list keeps every pnpm major (9+, which requires it) able to parse
+# this file; pnpm 10+ would tolerate a settings-only file.
+packages:
+  - '.'
+
 allowBuilds:
   esbuild: true
 minimumReleaseAgeExclude:

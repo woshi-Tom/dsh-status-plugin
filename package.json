@@ -52,7 +52,7 @@
     "build": "tsc -p tsconfig.json && tsc -p tsconfig.client.json && node scripts/build-client.mjs",
     "build:host": "tsc -p tsconfig.json",
     "build:client": "tsc -p tsconfig.client.json && node scripts/build-client.mjs",
-    "prepack": "pnpm run build && node scripts/check-pack.mjs",
+    "prepack": "tsc -p tsconfig.json && tsc -p tsconfig.client.json && node scripts/build-client.mjs && node scripts/check-pack.mjs",
     "check:pack": "node scripts/check-pack.mjs",
     "lint": "biome lint src test scripts",
     "lint:fix": "biome lint --write src test scripts",
