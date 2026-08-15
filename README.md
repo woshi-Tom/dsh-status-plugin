@@ -34,9 +34,11 @@ The client manifest (`package.json` → `dsh.client`) declares the browser entry
 ## Usage
 
 **normal**：
+
 <img width="399" height="710" alt="image" src="https://github.com/user-attachments/assets/3d2d3b23-220a-4bbb-afe9-a2e2fcd00696" />
 
 **alert**：
+
 <img width="422" height="600" alt="image" src="https://github.com/user-attachments/assets/17b45005-adce-43be-9577-56c973351b78" /> 
 
 
