@@ -35,10 +35,11 @@ The client manifest (`package.json` → `dsh.client`) declares the browser entry
 
 <img width="2560" height="1313" alt="abcddf52074cd98f465253a6619de744" src="https://github.com/user-attachments/assets/c6c6e322-4a11-425d-9682-6b5f48f05b7a" />
 
-The plugin registers two exact routes on the profile's web server:
+The plugin registers three exact routes on the profile's web server:
 
 ```
 GET /api/status          # JSON snapshot on demand
+GET /api/status/metrics  # Prometheus text exposition format
 GET /api/status/events   # Server-Sent Events stream
 ```
 
@@ -60,6 +61,7 @@ Example response:
     "uptimeSeconds": 3600,
     "loadAvg": [0.1, 0.1, 0.1],
     "cpuPercent": 12.4,
+    "eventLoopDelayMs": 2.3,
     "memory": { "rss": 123456, "heapTotal": 654321, "heapUsed": 432100, "external": 12345 },
     "systemMemory": { "total": 17179869184, "free": 4294967296, "used": 12884901888 },
     "lanAddresses": ["192.168.5.227"]
@@ -85,19 +87,21 @@ Example response:
 
 | Field | Source |
 |---|---|
-| `host.*` | `process` + `node:os` (pid, uptime, process memory, LAN IPv4 addresses); `cpuPercent` is CPU utilization sampled from `os.cpus()` deltas and works on every platform; `loadAvg` is the Unix load average — always `[0, 0, 0]` on Windows; `systemMemory.*` is machine-wide memory (`os.totalmem()` − `os.freemem()`) |
+| `host.*` | `process` + `node:os` (pid, uptime, process memory, LAN IPv4 addresses); `cpuPercent` is CPU utilization sampled from `os.cpus()` deltas and works on every platform; `eventLoopDelayMs` is the mean event-loop delay (`perf_hooks`) since the last sample; `loadAvg` is the Unix load average — always `[0, 0, 0]` on Windows; `systemMemory.*` is machine-wide memory (`os.totalmem()` − `os.freemem()`) |
 | `webServer.*` | `ctx.webServer` (bind host and actual listening port) |
-| `apiKey` | `DEEPSEEK_API_KEY` in `process.env`, else the working directory `.env`, `~/.env`, or `$DSH_HOME/.env` (checked in loadLayeredEnv priority order) — **presence only, never the value**; an empty assignment (`` DEEPSEEK_API_KEY="" ``) does not count as configured |
+| `apiKey` | `DEEPSEEK_API_KEY` in `process.env`, else the working directory `.env` or `$DSH_HOME/.env` (the exact layers the dsh CLI loads — `~/.env` is deliberately **not** checked) — **presence only, never the value**; an empty assignment (`` DEEPSEEK_API_KEY="" ``) does not count as configured |
 | `plugins.entries` | `ctx.pluginInventory.list()` (live Cordis Loader entry state) |
 
-The API key check reports only whether a key is configured and where it was found; the value itself never leaves the process.
+The API key check reports only whether a key is configured and where it was found; the value itself never leaves the process. The check result is cached for 60 s, so snapshots do not re-read `.env` files on the event loop.
+
+> **Privacy note (0.2.1+):** `host.lanAddresses` is `[]` by default. Set `exposeLanAddresses: true` if you need the LAN IPv4 addresses in the payload.
 
 ### `GET /api/status/events` (SSE)
 
 The host pushes to open browser streams — the server decides when the page needs new state, so idle pages make zero requests:
 
-- **`snapshot`** — a full status snapshot, emitted immediately on connect and then every `heartbeatMs` (default 30 s). Each snapshot card dissects to `cpuPercent`, `loadAvg`, `systemMemory`, and process-memory fields inside `host.*` for alert-driven UIs.
-- **`alert`** — emitted when an indicator enters or leaves its alert band. Entering requires `value > threshold`; an active alert only clears when the value drops below `threshold × (1 − hysteresis)`, so a value hovering near the threshold does not flap. Events are emitted on every transition and **re-synchronized on connect** so a page that opens mid-alert still learns about it:
+- **`snapshot`** — a full status snapshot, emitted immediately on connect and then every `heartbeatMs` (default 30 s). Each snapshot card dissects to `cpuPercent`, `eventLoopDelayMs`, `loadAvg`, `systemMemory`, and process-memory fields inside `host.*` for alert-driven UIs.
+- **`alert`** — emitted when an indicator enters or leaves its alert band. Entering requires `value > threshold`; an active alert only clears when the value drops below `threshold × (1 − hysteresis)`, so a value hovering near the threshold does not flap. Reasons: `cpu`, `memory` (Linux memory pressure uses `/proc/meminfo` `MemAvailable`, not raw `freemem()` — page cache no longer causes false alarms), and `eventLoop` (mean event-loop delay in ms). Events are emitted on every transition and **re-synchronized on connect** so a page that opens mid-alert still learns about it:
 
 ```
 event: snapshot
@@ -113,34 +117,82 @@ Default thresholds (configurable via the plugin config in the profile's cordis.y
 |---|---|---|
 | `cpuWarning` | `0.8` | CPU utilization above which a CPU overload alert fires |
 | `memoryWarning` | `0.85` | system memory pressure above which a memory alert fires |
+| `eventLoopWarning` | `100` | mean event-loop delay (ms) above which a stall alert fires |
 | `hysteresis` | `0.1` | recovery margin: an alert clears only below `threshold × (1 − hysteresis)` |
 | `heartbeatMs` | `30000` | snapshot push interval |
 | `checkIntervalMs` | `5000` | alert monitor sampling interval |
-| `authToken` | `''` | shared secret required on both routes; empty disables auth. See [Authentication](#authentication) |
+| `authToken` | `''` | shared secret required on all three routes; empty disables auth. See [Authentication](#authentication) |
+| `allowedOrigins` | `[]` | exact `Origin` values allowed to call the routes; empty disables origin checks. See [Authentication](#authentication) |
+| `exposeLanAddresses` | `false` | include `host.lanAddresses` in snapshots (off by default for privacy) |
+| `rateLimitPerMinute` | `300` | per-IP request cap per minute across all routes; `0` disables |
 | `maxSubscribers` | `32` | SSE subscriber cap; new connections over the cap fail with an error response |
 | `maxBufferedBytes` | `65536` | per-subscriber write-buffer high-water mark; a slow consumer over it is dropped |
+| `webhookUrl` | `''` | webhook URL notified on every alert transition; empty disables. See [Webhook notifications](#webhook-notifications) |
+| `webhookTimeoutMs` | `5000` | webhook request timeout in milliseconds |
 
 ### Authentication
 
-When `authToken` is set, both routes require it. The token can travel in either channel:
+When `authToken` is set, all three routes require it. The token can travel in either channel:
 
-- `GET /api/status` — `Authorization: Bearer <token>` header, or `?token=<token>`.
-- `GET /api/status/events` — `?token=<token>` query parameter; a native `EventSource` cannot set custom headers.
+- `GET /api/status` and `GET /api/status/metrics` — `Authorization: Bearer <token>` header, or `?token=<token>`.
+- `GET /api/status/events` — `?token=<token>` query parameter, or the `Authorization` header when the client uses the fetch-stream subscriber (see below); a native `EventSource` cannot set custom headers.
 
-A rejected request answers `401` with `{ "ok": false, "error": "unauthorized" }`. Comparison is constant-time (`crypto.timingSafeEqual`), so a wrong token does not leak its length. Because the query parameter can appear in logs and history, prefer header auth for `GET /api/status` and keep the SSE stream on a loopback-only webserver.
+A rejected request answers `401` with `{ "ok": false, "error": "unauthorized" }`. Comparison is constant-time (`crypto.timingSafeEqual`), so a wrong token does not leak its length. Because the query parameter can appear in logs and history, prefer header auth and keep the SSE stream on a loopback-only webserver.
 
-The built-in browser badge has no channel to receive the host's token (the client manifest cannot read the host config), so enabling `authToken` disables the badge's status views; a custom UI can authenticate by sending the header/query token above. Instances that need the bundled UI should leave `authToken` empty (the default) and rely on the webserver's loopback binding.
+**Origin policy.** Set `allowedOrigins` to a list of exact origins (e.g. `["https://dsh.example.com"]`) to reject cross-origin browser reads when the web server is reachable beyond loopback. Requests without an `Origin` header (curl, servers, same-origin navigation) always pass. An empty list (the default) accepts every origin.
 
-The browser side subscribes with a native `EventSource` (auto-reconnects on drop) and renders:
+**Rate limiting.** Every route is limited to `rateLimitPerMinute` requests per client IP (default 300, `0` disables). Exceeding the cap answers `429` with `{ "ok": false, "error": "rate limited" }`.
+
+**Header-auth SSE client.** The bundled badge has no channel to receive the host's token, so enabling `authToken` disables the badge's status views. Custom UIs can subscribe with the exported `createSseClient(url, headers, onEvent, onConnectionChange)` — pass `{ Authorization: 'Bearer <token>' }` and get header-authenticated SSE with automatic exponential-backoff reconnects.
+
+The browser side subscribes through a `fetch`-based SSE reader (auto-reconnects with exponential backoff, honoring the server's `retry:` frame when present) and renders:
 
 - a compact badge in the conversation header (status dot + uptime, click to open);
-- a detail panel with process/resource/service/plugin sections and the last update time;
+- a detail panel with process/resource/service/plugin sections, an event-loop row, a CPU/memory trend chart over the last 60 snapshots, and the last update time;
 - a toast on every alert transition (auto-dismisses after 6 s) plus a pulsing badge while an alert is active;
-- a gray badge dot when the stream is disconnected or no snapshot arrived for 90 s — a monitoring widget must say *unknown*, not *healthy*, when it loses contact.
+- a gray badge dot when the stream is disconnected or no snapshot arrived for 90 s — a monitoring widget must say *unknown*, not *healthy*, when it loses contact. The dot is also gray while the first connection is still being established, so the badge never claims health before it has data.
+
+### Webhook notifications
+
+Set `webhookUrl` to receive a JSON POST on every alert transition (enter and recover). The payload:
+
+```json
+{
+  "event": "alert",
+  "active": true,
+  "reason": "cpu",
+  "value": 0.87,
+  "threshold": 0.8,
+  "timestamp": "2026-08-14T03:50:00.000Z",
+  "hostname": "host",
+  "pid": 23185
+}
+```
+
+Delivery is fire-and-forget: a failed or timed-out request is logged and never disturbs the alert pipeline, so the harness keeps monitoring even when the notification channel is down. Wire it to any webhook-capable service (Slack, DingTalk, 企业微信, ntfy, …).
+
+### Prometheus metrics
+
+`GET /api/status/metrics` serves the snapshot in Prometheus text exposition format (`text/plain; version=0.0.4`) for scraping by existing monitoring stacks:
+
+```
+dsh_status_up 1
+dsh_status_uptime_seconds 3600
+dsh_status_cpu_percent 12.4
+dsh_status_event_loop_delay_ms 2.3
+dsh_status_loadavg_1 0.5
+dsh_status_process_rss_bytes 123456
+dsh_status_system_memory_used_bytes 12884901888
+dsh_status_api_key_configured 1
+dsh_status_plugins_total 42
+dsh_status_plugins_active 40
+```
+
+The endpoint honors `authToken`, `allowedOrigins`, and `rateLimitPerMinute` exactly like the other routes.
 
 ### Failure behavior
 
-- A collection error inside the handler returns `500` with `{ "ok": false, "error": "<message>" }` — structured, no stack leak, never a hung socket.
+- A collection error inside a handler returns `500` with `{ "ok": false, "error": "internal error" }` — sanitized, no internals or stack leaked; the real message goes to the host log.
 - `pluginInventory` is optional: when the service is absent, `plugins.entries` is `[]` rather than an error.
 - Response handlers and both periodic timers (heartbeat and alert sampler) are exception-isolated: a throwing collection is logged, never propagated as an uncaught exception that could crash the harness the plugin monitors.
 - Responses carry `cache-control: no-store` (runtime data must not be cached); the SSE stream uses `text/event-stream` with `x-accel-buffering: no`.
@@ -159,7 +211,9 @@ The browser side subscribes with a native `EventSource` (auto-reconnects on drop
 pnpm install
 pnpm run build          # host tsc + client typecheck + esbuild bundle
 pnpm test               # vitest unit tests
+pnpm run lint           # biome lint (no auto-formatting)
 npm pack --dry-run      # verify tarball contents (prepack runs the build)
+node scripts/check-pack.mjs  # verify the tarball contains every module lib/ imports
 ```
 
 ## Publish

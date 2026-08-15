@@ -2,3 +2,4 @@
 .npmrc
 lib/
 node_modules/
+.pnpm-store/

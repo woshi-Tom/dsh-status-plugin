@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { IncomingMessage } from 'node:http';
-import { isAuthorized } from '../src/auth.js';
+import { isAuthorized, isOriginAllowed } from '../src/auth.js';
 
 /** Build a request with a URL and optional headers. */
 function req(url: string, headers: Record<string, string | undefined> = {}): IncomingMessage {
@@ -45,5 +45,31 @@ describe('isAuthorized', () => {
   it('does not confuse a query token with a header token', () => {
     expect(isAuthorized(req('/api/status?token=secret-token'), 'secret-token')).toBe(true);
     expect(isAuthorized(req('/api/status?token=wrong', { authorization: 'Bearer secret-token' }), 'secret-token')).toBe(true);
+  });
+});
+
+describe('isOriginAllowed', () => {
+  it('accepts everything with an empty allowlist', () => {
+    expect(isOriginAllowed(req('/api/status', { origin: 'https://evil.example' }), [])).toBe(true);
+    expect(isOriginAllowed(req('/api/status'), [])).toBe(true);
+  });
+
+  it('rejects a disallowed origin', () => {
+    const allowlist = ['https://dsh.example'];
+    expect(isOriginAllowed(req('/api/status', { origin: 'https://evil.example' }), allowlist)).toBe(false);
+  });
+
+  it('accepts an allowed origin', () => {
+    const allowlist = ['https://dsh.example'];
+    expect(isOriginAllowed(req('/api/status', { origin: 'https://dsh.example' }), allowlist)).toBe(true);
+  });
+
+  it('accepts header-less clients such as curl even with an allowlist', () => {
+    expect(isOriginAllowed(req('/api/status'), ['https://dsh.example'])).toBe(true);
+  });
+
+  it('matches origins exactly, not by prefix', () => {
+    const allowlist = ['https://dsh.example'];
+    expect(isOriginAllowed(req('/api/status', { origin: 'https://dsh.example.evil' }), allowlist)).toBe(false);
   });
 });

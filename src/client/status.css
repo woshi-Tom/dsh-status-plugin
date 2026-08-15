@@ -48,7 +48,8 @@
   animation: dsh-status-pulse 1.6s ease-in-out infinite;
 }
 
-.badge[data-state='disconnected'] .dot {
+.badge[data-state='disconnected'] .dot,
+.badge[data-state='unknown'] .dot {
   background: var(--dsw-alias-label-tertiary);
 }
 
@@ -208,6 +209,33 @@
 .alertBanner p {
   margin: 0;
   color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.trend {
+  width: 100%;
+  height: auto;
+}
+
+.trendAxis {
+  stroke: var(--dsw-alias-border-l2);
+  stroke-width: 1;
+}
+
+.trendCpu {
+  stroke: var(--dsw-alias-state-business-primary);
+  stroke-width: 1.5;
+}
+
+.trendMem {
+  stroke: var(--dsw-alias-state-warning-primary);
+  stroke-width: 1.5;
+}
+
+.trendEmpty {
+  margin: 0;
+  color: var(--dsw-alias-label-tertiary);
   font-size: 12px;
   line-height: 18px;
 }

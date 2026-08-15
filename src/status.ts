@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 import type { IncomingMessage } from 'node:http';
 import type { Context } from '@deepseek-ai/cordis';
 import { cpuUtilization } from './cpu.js';
+import { eventLoopDelayMs } from './event-loop.js';
 
 /** Node process memory snapshot (os-independent subset of process.memoryUsage). */
 export interface MemoryUsage {
@@ -74,6 +75,7 @@ export interface StatusPayload {
     uptimeSeconds: number;
     loadAvg: number[];
     cpuPercent: number;
+    eventLoopDelayMs: number;
     memory: MemoryUsage;
     systemMemory: {
       total: number;
@@ -109,20 +111,46 @@ function firstApiKeyFile(...candidates: string[]): string | null {
       const content = readFileSync(candidate, 'utf8');
       if (content.split(/\r?\n/).some(lineLooksLikeApiKey)) return candidate;
     } catch {
-      continue;
+      // unreadable or missing candidate: try the next layer
     }
   }
   return null;
 }
 
-/** Resolve whether an API key is configured, honoring cwd > home > DSH_HOME precedence. */
-export function detectApiKey(): StatusPayload['apiKey'] {
+/** How long a detected API-key presence stays valid before re-reading disk. */
+export const API_KEY_CACHE_TTL_MS = 60_000;
+
+let apiKeyCache: { value: StatusPayload['apiKey']; at: number } | null = null;
+
+/**
+ * Resolve whether an API key is configured, honoring the same layers the dsh
+ * CLI loads: inherited environment, then `cwd/.env`, then `$DSH_HOME/.env`
+ * (the CLI does not read `~/.env`, so neither do we). The result is cached
+ * for a short TTL because every status snapshot used to synchronously re-read
+ * up to three files on the event loop.
+ */
+export function detectApiKey(now: number = Date.now()): StatusPayload['apiKey'] {
+  if (apiKeyCache !== null && now - apiKeyCache.at < API_KEY_CACHE_TTL_MS) {
+    return apiKeyCache.value;
+  }
+  const value = detectApiKeyUncached();
+  apiKeyCache = { value, at: now };
+  return value;
+}
+
+/** Un-cached presence probe; exported for tests. */
+export function detectApiKeyUncached(): StatusPayload['apiKey'] {
   if (process.env.DEEPSEEK_API_KEY) return { configured: true, source: 'env' };
   const home = homedir();
   const cwd = process.cwd();
   const dshHome = process.env.DSH_HOME ?? join(home, '.dsh');
-  const source = firstApiKeyFile(join(cwd, '.env'), join(home, '.env'), join(dshHome, '.env'));
+  const source = firstApiKeyFile(join(cwd, '.env'), join(dshHome, '.env'));
   return source ? { configured: true, source: 'file' } : { configured: false, source: null };
+}
+
+/** Clear the cached API-key presence (tests). */
+export function resetApiKeyCache(): void {
+  apiKeyCache = null;
 }
 
 /** All non-internal IPv4 addresses of this host. */
@@ -136,8 +164,13 @@ export function collectLanAddresses(): string[] {
   return addresses;
 }
 
-/** Collect a fresh status snapshot from the live context. */
-export function collectStatus(ctx: Context): StatusPayload {
+/**
+ * Collect a fresh status snapshot from the live context.
+ * @param ctx - the plugin context.
+ * @param exposeLanAddresses - when false, `host.lanAddresses` is `[]` so the
+ *   endpoint never discloses internal network topology.
+ */
+export function collectStatus(ctx: Context, exposeLanAddresses = true): StatusPayload {
   const memory = process.memoryUsage();
   const webServer = ctx.webServer;
   const inventory = (ctx.reflect.get('pluginInventory', false) as PluginInventoryService | undefined)?.list?.() ?? { entries: [] };
@@ -156,6 +189,7 @@ export function collectStatus(ctx: Context): StatusPayload {
       uptimeSeconds: Math.round(process.uptime()),
       loadAvg: loadavg(),
       cpuPercent: cpuUtilization(),
+      eventLoopDelayMs: eventLoopDelayMs(),
       memory: {
         rss: memory.rss,
         heapTotal: memory.heapTotal,
@@ -163,7 +197,7 @@ export function collectStatus(ctx: Context): StatusPayload {
         external: memory.external,
       },
       systemMemory: { total, free, used: total - free },
-      lanAddresses: collectLanAddresses(),
+      lanAddresses: exposeLanAddresses ? collectLanAddresses() : [],
     },
     webServer: {
       host: webServer.host,

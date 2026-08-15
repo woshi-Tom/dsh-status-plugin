@@ -11,6 +11,7 @@ export interface StatusPayload {
     uptimeSeconds: number;
     loadAvg: number[];
     cpuPercent: number;
+    eventLoopDelayMs: number;
     memory: {
       rss: number;
       heapTotal: number;
@@ -76,6 +77,12 @@ export function formatUptime(seconds: number): string {
   const minutes = Math.floor((safe % 3600) / 60)
   if (hours === 0) return `${minutes}m`
   return `${hours}h ${minutes}m`
+}
+
+/** One point of the panel trend chart: CPU and memory fractions (0..1). */
+export interface TrendPoint {
+  cpuPercent: number
+  memoryUsed: number
 }
 
 /** Format a 0..1 ratio as a percentage with one decimal. */

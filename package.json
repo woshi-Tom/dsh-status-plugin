@@ -1,6 +1,6 @@
 {
   "name": "dsh-status-plugin",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "A dsh status plugin with host-plane and browser halves: harness runtime health (process, listener, API-key presence, memory, uptime, plugin inventory) as JSON plus server-pushed SSE alerts, surfaced as a header badge with an expanded panel in the Web UI",
   "keywords": [
     "dsh",
@@ -40,11 +40,7 @@
     "./package.json": "./package.json"
   },
   "files": [
-    "lib/index.js",
-    "lib/alerts.js",
-    "lib/sse.js",
-    "lib/status.js",
-    "lib/client.js",
+    "lib/**/*.js",
     "lib/client.js.map",
     "cordis.patch.yml",
     "lib/types/**/*.d.ts",
@@ -56,7 +52,10 @@
     "build": "tsc -p tsconfig.json && tsc -p tsconfig.client.json && node scripts/build-client.mjs",
     "build:host": "tsc -p tsconfig.json",
     "build:client": "tsc -p tsconfig.client.json && node scripts/build-client.mjs",
-    "prepack": "pnpm run build",
+    "prepack": "pnpm run build && node scripts/check-pack.mjs",
+    "check:pack": "node scripts/check-pack.mjs",
+    "lint": "biome lint src test scripts",
+    "lint:fix": "biome lint --write src test scripts",
     "test": "vitest run"
   },
   "license": "MIT",
@@ -85,6 +84,7 @@
     "react": "^18.2.0"
   },
   "devDependencies": {
+    "@biomejs/biome": "^2.5.8",
     "@deepseek-ai/cordis": "^4.0.1",
     "@deepseek-ai/dsh-client-locale": "0.1.0-rc.6",
     "@deepseek-ai/dsh-client-runtime": "0.1.0-rc.6",

@@ -40,3 +40,21 @@ export function isAuthorized(req: IncomingMessage, expected: string): boolean {
   const token = query.get('token');
   return token !== null && safeEqual(token, expected);
 }
+
+/**
+ * True when the request's `Origin` header is acceptable. With an empty
+ * allowlist, every origin (and header-less clients such as curl) passes —
+ * the pre-0.3 behavior. With a non-empty allowlist, requests that carry an
+ * `Origin` header must match an entry exactly; requests without one (curl,
+ * servers, same-origin navigation) are always accepted. This stops a hostile
+ * web page from reading the status endpoints cross-origin when the web server
+ * is reachable beyond loopback.
+ * @param req - the incoming request to inspect.
+ * @param allowedOrigins - exact origins permitted to call the endpoints.
+ */
+export function isOriginAllowed(req: IncomingMessage, allowedOrigins: readonly string[]): boolean {
+  if (allowedOrigins.length === 0) return true;
+  const origin = req.headers.origin;
+  if (typeof origin !== 'string' || origin === '') return true;
+  return allowedOrigins.includes(origin);
+}

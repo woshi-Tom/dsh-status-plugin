@@ -24,6 +24,99 @@ export const NS = 'dsh-status'
 /** Services required by the header registration. */
 export const inject = ['slots', 'locale']
 
+/** Reconnect delay bounds for the SSE client (exponential backoff). */
+const MIN_RETRY_MS = 1_000
+const MAX_RETRY_MS = 30_000
+
+/** Build a minimal SSE client over fetch + ReadableStream. */
+export function createSseClient(
+  url: string,
+  headers: Record<string, string>,
+  onEvent: (event: StatusEvent) => void,
+  onConnectionChange: (connected: boolean) => void,
+): () => void {
+  let closed = false
+  let retryMs = MIN_RETRY_MS
+  let retryTimer: ReturnType<typeof setTimeout> | null = null
+  let controller: AbortController | null = null
+
+  const parseEvent = (raw: string): unknown => {
+    try {
+      return JSON.parse(raw)
+    } catch {
+      return null
+    }
+  }
+
+  const handleFrame = (frame: string): void => {
+    let eventName = 'message'
+    const dataLines: string[] = []
+    for (const line of frame.split('\n')) {
+      if (line.startsWith('event:')) eventName = line.slice(6).trim()
+      else if (line.startsWith('data:')) dataLines.push(line.slice(5).trimStart())
+      else if (line.startsWith('retry:')) {
+        const ms = Number(line.slice(6).trim())
+        if (Number.isFinite(ms) && ms > 0) retryMs = ms
+      }
+    }
+    if (dataLines.length === 0) return
+    const payload = parseEvent(dataLines.join('\n'))
+    if (payload === null) return
+    if (eventName === 'snapshot') onEvent({ type: 'snapshot', payload: payload as StatusPayload })
+    else if (eventName === 'alert') onEvent({ type: 'alert', payload: payload as AlertEvent })
+  }
+
+  const scheduleReconnect = (): void => {
+    onConnectionChange(false)
+    if (closed) return
+    retryTimer = setTimeout(() => { void connect() }, retryMs)
+    retryMs = Math.min(retryMs * 2, MAX_RETRY_MS)
+  }
+
+  const connect = async (): Promise<void> => {
+    if (closed) return
+    controller = new AbortController()
+    let response: Response
+    try {
+      response = await fetch(url, { headers, cache: 'no-store', signal: controller.signal })
+      if (!response.ok) throw new Error(`SSE connect failed: ${response.status}`)
+      if (response.body === null) throw new Error('SSE response has no body')
+    } catch {
+      scheduleReconnect()
+      return
+    }
+    onConnectionChange(true)
+    retryMs = MIN_RETRY_MS
+    const reader = response.body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+    try {
+      while (!closed) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+        let boundary = buffer.indexOf('\n\n')
+        while (boundary !== -1) {
+          const frame = buffer.slice(0, boundary)
+          buffer = buffer.slice(boundary + 2)
+          handleFrame(frame)
+          boundary = buffer.indexOf('\n\n')
+        }
+      }
+    } catch {
+      // stream error: fall through to reconnect
+    }
+    if (!closed) scheduleReconnect()
+  }
+
+  void connect()
+  return () => {
+    closed = true
+    controller?.abort()
+    if (retryTimer !== null) clearTimeout(retryTimer)
+  }
+}
+
 /** Contribute the status badge to the session header utilities seat. */
 export function apply(ctx: ClientContext): void {
   const style = document.createElement('style')
@@ -34,7 +127,6 @@ export function apply(ctx: ClientContext): void {
 
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'dsh-status: dictionaries')
 
-  const t = ctx.locale.bind(NS)
   const statusUrl = '/api/status'
   const eventsUrl = '/api/status/events'
 
@@ -47,27 +139,8 @@ export function apply(ctx: ClientContext): void {
   const subscribe = (
     onEvent: (event: StatusEvent) => void,
     onConnectionChange: (connected: boolean) => void,
-  ): (() => void) => {
-    const source = new EventSource(eventsUrl)
-    const parseEvent = (raw: string): unknown => {
-      try {
-        return JSON.parse(raw)
-      } catch {
-        return null
-      }
-    }
-    source.addEventListener('snapshot', (event) => {
-      const payload = parseEvent((event as MessageEvent).data)
-      if (payload !== null) onEvent({ type: 'snapshot', payload: payload as StatusPayload })
-    })
-    source.addEventListener('alert', (event) => {
-      const payload = parseEvent((event as MessageEvent).data)
-      if (payload !== null) onEvent({ type: 'alert', payload: payload as AlertEvent })
-    })
-    source.addEventListener('open', () => onConnectionChange(true))
-    source.addEventListener('error', () => onConnectionChange(false))
-    return () => source.close()
-  }
+    headers: Record<string, string> = {},
+  ): (() => void) => createSseClient(eventsUrl, headers, onEvent, onConnectionChange)
 
   const injected = (): StatusBadgeInjected => ({ fetchStatus, subscribe })
 

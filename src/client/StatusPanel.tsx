@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react'
 import type { StatusLocaleKey } from './locales.ts'
-import { formatBytes, formatPercent, formatUptime, type AlertEvent, type StatusPayload } from './status.ts'
+import { formatBytes, formatPercent, formatUptime, type AlertEvent, type StatusPayload, type TrendPoint } from './status.ts'
 import css from './status.css'
 
 /** Localized message function handed to the panel. */
@@ -11,9 +11,10 @@ export interface StatusPanelProps {
   t: T
   snapshot: StatusPayload | null
   alerts: Partial<Record<AlertEvent['reason'], AlertEvent>>
-  connected: boolean
+  connected: boolean | null
   loading: boolean
   error: boolean
+  trend: TrendPoint[]
   onRetry: () => void
   onClose: () => void
 }
@@ -38,8 +39,42 @@ function Section({ title, children }: { title: string; children: ReactNode }): R
   )
 }
 
+/** Alert reason in localized copy. */
+function alertReason(t: T, reason: AlertEvent['reason']): string {
+  if (reason === 'cpu') return t('alertCpu')
+  if (reason === 'memory') return t('alertMemory')
+  return t('alertEventLoop')
+}
+
+const TREND_WIDTH = 300
+const TREND_HEIGHT = 64
+const TREND_PAD = 4
+
+/** Mini line chart of CPU and memory fractions over the last snapshots. */
+function TrendChart({ points, t }: { points: TrendPoint[]; t: T }): ReactNode {
+  if (points.length < 2) return <p className={css.trendEmpty}>{t('trendEmpty')}</p>
+  const stepX = (TREND_WIDTH - TREND_PAD * 2) / (points.length - 1)
+  const yFor = (value: number): number =>
+    TREND_HEIGHT - TREND_PAD - (Math.min(Math.max(value, 0), 100) / 100) * (TREND_HEIGHT - TREND_PAD * 2)
+  const path = (pick: (point: TrendPoint) => number): string =>
+    points.map((point, index) =>
+      `${index === 0 ? 'M' : 'L'}${(TREND_PAD + index * stepX).toFixed(1)},${yFor(pick(point)).toFixed(1)}`,
+    ).join(' ')
+  return (
+    <svg className={css.trend} viewBox={`0 0 ${TREND_WIDTH} ${TREND_HEIGHT}`} role="img" aria-label={t('trend')}>
+      <line
+        x1={TREND_PAD} y1={TREND_HEIGHT - TREND_PAD}
+        x2={TREND_WIDTH - TREND_PAD} y2={TREND_HEIGHT - TREND_PAD}
+        className={css.trendAxis}
+      />
+      <path d={path(point => point.memoryUsed * 100)} className={css.trendMem} fill="none" />
+      <path d={path(point => point.cpuPercent)} className={css.trendCpu} fill="none" />
+    </svg>
+  )
+}
+
 /** Render the expanded status panel: alerts, process, resources, service, plugins. */
-export function StatusPanel({ t, snapshot, alerts, connected, loading, error, onRetry, onClose }: StatusPanelProps): ReactNode {
+export function StatusPanel({ t, snapshot, alerts, connected, loading, error, trend, onRetry, onClose }: StatusPanelProps): ReactNode {
   const alertList = Object.values(alerts)
   return (
     <div className={css.panel} role="dialog" aria-label={t('clickForDetails')}>
@@ -48,7 +83,7 @@ export function StatusPanel({ t, snapshot, alerts, connected, loading, error, on
         <button type="button" className={css.panelClose} aria-label={t('close')} onClick={onClose}>×</button>
       </header>
       {loading ? <p className={css.status}>{t('loading')}</p> : null}
-      {!connected ? <div className={css.failure}><p role="alert">{t('disconnected')}</p></div> : null}
+      {connected === false ? <div className={css.failure}><p role="alert">{t('disconnected')}</p></div> : null}
       {error ? (
         <div className={css.failure}>
           <p role="alert">{t('error')}</p>
@@ -62,7 +97,7 @@ export function StatusPanel({ t, snapshot, alerts, connected, loading, error, on
               <strong>{t('alertActive')}</strong>
               {alertList.map(alert => (
                 <p key={alert.reason}>
-                  {alert.reason === 'cpu' ? t('alertCpu') : t('alertMemory')}：
+                  {alertReason(t, alert.reason)}：
                   {t('alertValue', { value: formatPercent(alert.value), threshold: formatPercent(alert.threshold) })}
                 </p>
               ))}
@@ -78,11 +113,16 @@ export function StatusPanel({ t, snapshot, alerts, connected, loading, error, on
           </Section>
           <Section title={t('resources')}>
             <Row label={t('cpu')} value={`${snapshot.host.cpuPercent.toFixed(1)}%`} />
+            <Row label={t('eventLoop')} value={`${snapshot.host.eventLoopDelayMs.toFixed(1)} ms`} />
             <Row label={t('loadAverage')} value={snapshot.host.loadAvg.map(value => value.toFixed(2)).join(' / ')} />
             <Row label={t('systemMemory')} value={`${formatBytes(snapshot.host.systemMemory.used)} / ${formatBytes(snapshot.host.systemMemory.total)} (${formatPercent(snapshot.host.systemMemory.used / Math.max(snapshot.host.systemMemory.total, 1))})`} />
             <Row label={t('processMemory')} value={formatBytes(snapshot.host.memory.rss)} />
             <Row label={t('heap')} value={`${formatBytes(snapshot.host.memory.heapUsed)} / ${formatBytes(snapshot.host.memory.heapTotal)}`} />
           </Section>
+          <section className={css.section}>
+            <h3>{t('trend')}</h3>
+            <TrendChart points={trend} t={t} />
+          </section>
           <Section title={t('service')}>
             <Row label={t('listen')} value={`${snapshot.webServer.host}:${snapshot.webServer.port}`} />
             <Row label={t('apiKey')} value={snapshot.apiKey.configured ? `${t('apiKeyConfigured')} (${snapshot.apiKey.source === 'env' ? t('sourceEnv') : t('sourceFile')})` : t('apiKeyMissing')} />

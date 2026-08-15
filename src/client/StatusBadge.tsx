@@ -1,8 +1,7 @@
 import { useCallback, useEffect, useState, type ReactNode } from 'react'
 import type { InjectFace, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import { StatusPanel } from './StatusPanel.tsx'
-import { formatUptime, type AlertEvent, type StatusEvent, type StatusPayload } from './status.ts'
-import { type StatusLocaleKey } from './locales.ts'
+import { formatUptime, type AlertEvent, type StatusEvent, type StatusPayload, type TrendPoint } from './status.ts'
 import css from './status.css'
 
 /** Registration-side face providing the status data channels. */
@@ -13,6 +12,7 @@ export interface StatusBadgeInjected {
   subscribe: (
     onEvent: (event: StatusEvent) => void,
     onConnectionChange: (connected: boolean) => void,
+    headers?: Record<string, string>,
   ) => () => void
 }
 
@@ -28,30 +28,41 @@ type Toast = { kind: 'alert' | 'recovered'; event: AlertEvent }
 const TOAST_DISMISS_MS = 6_000
 /** Mark the stream disconnected after this long without any snapshot (3× the default heartbeat). */
 const STALE_AFTER_MS = 90_000
+/** How many trend points the panel keeps (30 s heartbeat → 30 min of history). */
+const TREND_POINTS = 60
 
 /** Render the compact header status badge and its click-to-open panel. */
 export function StatusBadge({ fetchStatus, subscribe, t }: StatusBadgeProps): ReactNode {
   const [snapshot, setSnapshot] = useState<StatusPayload | null>(null)
   const [error, setError] = useState(false)
-  const [connected, setConnected] = useState(true)
+  const [connected, setConnected] = useState<boolean | null>(null)
   const [alerts, setAlerts] = useState<Partial<Record<AlertEvent['reason'], AlertEvent>>>({})
   const [toast, setToast] = useState<Toast | null>(null)
   const [open, setOpen] = useState(false)
+  const [trend, setTrend] = useState<TrendPoint[]>([])
 
   useEffect(() => {
     let mounted = true
     let lastSnapshotAt = Date.now()
+    const record = (payload: StatusPayload): void => {
+      setSnapshot(payload)
+      setError(false)
+      lastSnapshotAt = Date.now()
+      const total = Math.max(payload.host.systemMemory.total, 1)
+      setTrend(prev => [...prev.slice(-(TREND_POINTS - 1)), {
+        cpuPercent: payload.host.cpuPercent,
+        memoryUsed: payload.host.systemMemory.used / total,
+      }])
+    }
     void fetchStatus().then(
-      (payload) => { if (mounted) { setSnapshot(payload); setError(false); lastSnapshotAt = Date.now() } },
+      (payload) => { if (mounted) { record(payload); setConnected(true) } },
       () => { if (mounted) setError(true) },
     )
     const unsubscribe = subscribe((event) => {
       if (!mounted) return
       if (event.type === 'snapshot') {
-        setSnapshot(event.payload)
-        setError(false)
+        record(event.payload)
         setConnected(true)
-        lastSnapshotAt = Date.now()
         return
       }
       const alert = event.payload
@@ -93,14 +104,18 @@ export function StatusBadge({ fetchStatus, subscribe, t }: StatusBadgeProps): Re
     )
   }, [fetchStatus])
 
-  const state = !connected ? 'disconnected' : alerting ? 'alert' : 'healthy'
+  const state: 'healthy' | 'alert' | 'disconnected' | 'unknown' =
+    connected === null ? 'unknown'
+      : !connected ? 'disconnected'
+        : alerting ? 'alert'
+          : 'healthy'
 
   return (
     <div className={css.badgeRoot}>
       {toast !== null ? (
         <div className={css.toast} data-kind={toast.kind} role="status">
           <strong>{toast.kind === 'alert' ? t('alertActive') : t('alertRecovered')}</strong>
-          <span>{toast.event.reason === 'cpu' ? t('alertCpu') : t('alertMemory')}</span>
+          <span>{toast.event.reason === 'cpu' ? t('alertCpu') : toast.event.reason === 'memory' ? t('alertMemory') : t('alertEventLoop')}</span>
           <button type="button" className={css.toastClose} aria-label={t('close')} onClick={() => setToast(null)}>×</button>
         </div>
       ) : null}
@@ -127,6 +142,7 @@ export function StatusBadge({ fetchStatus, subscribe, t }: StatusBadgeProps): Re
           connected={connected}
           error={error}
           loading={snapshot === null && !error}
+          trend={trend}
           onRetry={retry}
           onClose={() => setOpen(false)}
         />

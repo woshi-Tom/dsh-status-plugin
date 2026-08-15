@@ -1,4 +1,4 @@
-import { cpus, type CpuInfo } from 'node:os';
+import { cpus } from 'node:os';
 
 /** Per-core CPU time counters as reported by `os.cpus()`. */
 export interface CpuTimes {
