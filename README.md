@@ -35,7 +35,8 @@ The client manifest (`package.json` → `dsh.client`) declares the browser entry
 
 <img width="2560" height="1313" alt="abcddf52074cd98f465253a6619de744" src="https://github.com/user-attachments/assets/c6c6e322-4a11-425d-9682-6b5f48f05b7a" />
 
-<img width="422" height="600" alt="image" src="https://github.com/user-attachments/assets/17b45005-adce-43be-9577-56c973351b78" />
+<img width="422" height="600" alt="image" src="https://github.com/user-attachments/assets/17b45005-adce-43be-9577-56c973351b78" /> <img width="399" height="710" alt="image" src="https://github.com/user-attachments/assets/3d2d3b23-220a-4bbb-afe9-a2e2fcd00696" />
+
 
 
 The plugin registers three exact routes on the profile's web server:
