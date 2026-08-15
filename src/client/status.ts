@@ -45,7 +45,7 @@ export interface StatusPayload {
 /** One alert transition pushed by the host monitor. */
 export interface AlertEvent {
   active: boolean;
-  reason: 'cpu' | 'memory';
+  reason: 'cpu' | 'memory' | 'eventLoop';
   value: number;
   threshold: number;
 }

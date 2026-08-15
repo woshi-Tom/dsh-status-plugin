@@ -1,6 +1,6 @@
 {
   "name": "dsh-status-plugin",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "A dsh status plugin with host-plane and browser halves: harness runtime health (process, listener, API-key presence, memory, uptime, plugin inventory) as JSON plus server-pushed SSE alerts, surfaced as a header badge with an expanded panel in the Web UI",
   "keywords": [
     "dsh",

@@ -46,6 +46,18 @@ function alertReason(t: T, reason: AlertEvent['reason']): string {
   return t('alertEventLoop')
 }
 
+/**
+ * Value/threshold text for one alert. CPU and memory are 0..1 fractions shown
+ * as percentages; the event-loop delay is a millisecond duration and must not
+ * go through `formatPercent` (it would read as an absurd percentage).
+ */
+function alertValueText(alert: AlertEvent): { value: string; threshold: string } {
+  if (alert.reason === 'eventLoop') {
+    return { value: `${alert.value.toFixed(1)} ms`, threshold: `${alert.threshold.toFixed(1)} ms` }
+  }
+  return { value: formatPercent(alert.value), threshold: formatPercent(alert.threshold) }
+}
+
 const TREND_WIDTH = 300
 const TREND_HEIGHT = 64
 const TREND_PAD = 4
@@ -98,7 +110,7 @@ export function StatusPanel({ t, snapshot, alerts, connected, loading, error, tr
               {alertList.map(alert => (
                 <p key={alert.reason}>
                   {alertReason(t, alert.reason)}：
-                  {t('alertValue', { value: formatPercent(alert.value), threshold: formatPercent(alert.threshold) })}
+                  {t('alertValue', alertValueText(alert))}
                 </p>
               ))}
             </div>
