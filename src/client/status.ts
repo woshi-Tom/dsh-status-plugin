@@ -22,6 +22,14 @@ export interface StatusPayload {
       free: number;
       used: number;
     };
+    disk: {
+      mount: string;
+      total: number;
+      free: number;
+      avail: number;
+      used: number;
+      percent: number;
+    } | null;
   };
   webServer: {
     host: string;
@@ -45,7 +53,7 @@ export interface StatusPayload {
 /** One alert transition pushed by the host monitor. */
 export interface AlertEvent {
   active: boolean;
-  reason: 'cpu' | 'memory' | 'eventLoop';
+  reason: 'cpu' | 'memory' | 'eventLoop' | 'disk';
   value: number;
   threshold: number;
 }

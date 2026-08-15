@@ -5,7 +5,7 @@ English | [中文](README.zh.md)
 A status plugin for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (dsh). Two planes in one package:
 
 - **Host plane** — HTTP endpoints exposing the running harness's runtime health as JSON: process, listener, API-key presence, memory, uptime, and the live plugin inventory.
-- **Client plane** — a header badge in the web UI (top-right of a conversation session) that shows uptime, opens a detail panel, and raises toasts when the host reports overload or memory-pressure alerts.
+- **Client plane** — a header badge in the web UI (top-right of a conversation session) that shows uptime, opens a detail panel, raises toasts when the host reports overload or memory-pressure alerts, and a settings page that tunes alert thresholds live.
 
 - **Package**: `dsh-status-plugin`
 - **Runtime**: host (ESM) + browser bundle (a CJS factory wrapped for the dsh client-modules `__ModuleLoader__` contract), built with `tsc` + esbuild to `lib/`.
@@ -72,6 +72,7 @@ Example response:
     "eventLoopDelayMs": 2.3,
     "memory": { "rss": 123456, "heapTotal": 654321, "heapUsed": 432100, "external": 12345 },
     "systemMemory": { "total": 17179869184, "free": 4294967296, "used": 12884901888 },
+    "disk": { "mount": "/", "total": 107374182400, "free": 64424509440, "avail": 60129542144, "used": 42949672960, "percent": 0.416 },
     "lanAddresses": ["192.168.5.227"]
   },
   "webServer": {
@@ -95,7 +96,7 @@ Example response:
 
 | Field | Source |
 |---|---|
-| `host.*` | `process` + `node:os` (pid, uptime, process memory, LAN IPv4 addresses); `cpuPercent` is CPU utilization sampled from `os.cpus()` deltas and works on every platform; `eventLoopDelayMs` is the mean event-loop delay (`perf_hooks`) since the last sample; `loadAvg` is the Unix load average — always `[0, 0, 0]` on Windows; `systemMemory.*` is machine-wide memory (`os.totalmem()` − `os.freemem()`) |
+| `host.*` | `process` + `node:os` (pid, uptime, process memory, LAN IPv4 addresses); `cpuPercent` is CPU utilization sampled from `os.cpus()` deltas and works on every platform; `eventLoopDelayMs` is the mean event-loop delay (`perf_hooks`) since the last sample; `loadAvg` is the Unix load average — always `[0, 0, 0]` on Windows; `systemMemory.*` is machine-wide memory (`os.totalmem()` − `os.freemem()`); `disk` is the **working disk** — `fs.statfsSync` on `process.cwd()`, falling back to the OS temp directory, so the filesystem the harness actually runs on is what gets reported (`null` only when every probe fails); `disk.percent` follows the `df` convention `used / (used + avail)`, so reserved blocks (the 5% ext4 keeps for root) do not overstate usage |
 | `webServer.*` | `ctx.webServer` (bind host and actual listening port) |
 | `apiKey` | `DEEPSEEK_API_KEY` in `process.env`, else the working directory `.env` or `$DSH_HOME/.env` (the exact layers the dsh CLI loads — `~/.env` is deliberately **not** checked) — **presence only, never the value**; an empty assignment (`` DEEPSEEK_API_KEY="" ``) does not count as configured |
 | `plugins.entries` | `ctx.pluginInventory.list()` (live Cordis Loader entry state) |
@@ -109,7 +110,7 @@ The API key check reports only whether a key is configured and where it was foun
 The host pushes to open browser streams — the server decides when the page needs new state, so idle pages make zero requests:
 
 - **`snapshot`** — a full status snapshot, emitted immediately on connect and then every `heartbeatMs` (default 30 s). Each snapshot card dissects to `cpuPercent`, `eventLoopDelayMs`, `loadAvg`, `systemMemory`, and process-memory fields inside `host.*` for alert-driven UIs.
-- **`alert`** — emitted when an indicator enters or leaves its alert band. Entering requires `value > threshold`; an active alert only clears when the value drops below `threshold × (1 − hysteresis)`, so a value hovering near the threshold does not flap. Reasons: `cpu`, `memory` (Linux memory pressure uses `/proc/meminfo` `MemAvailable`, not raw `freemem()` — page cache no longer causes false alarms), and `eventLoop` (mean event-loop delay in ms). Events are emitted on every transition and **re-synchronized on connect** so a page that opens mid-alert still learns about it:
+- **`alert`** — emitted when an indicator enters or leaves its alert band. Entering requires `value > threshold`; an active alert only clears when the value drops below `threshold × (1 − hysteresis)`, so a value hovering near the threshold does not flap. Reasons: `cpu`, `memory` (Linux memory pressure uses `/proc/meminfo` `MemAvailable`, not raw `freemem()` — page cache no longer causes false alarms), `eventLoop` (mean event-loop delay in ms), and `disk` (working-disk usage fraction, `df`-style). Events are emitted on every transition and **re-synchronized on connect** so a page that opens mid-alert still learns about it:
 
 ```
 event: snapshot
@@ -125,6 +126,7 @@ Default thresholds (configurable via the plugin config in the profile's cordis.y
 |---|---|---|
 | `cpuWarning` | `0.8` | CPU utilization above which a CPU overload alert fires |
 | `memoryWarning` | `0.85` | system memory pressure above which a memory alert fires |
+| `diskWarning` | `0.9` | working-disk usage above which a disk alert fires |
 | `eventLoopWarning` | `100` | mean event-loop delay (ms) above which a stall alert fires |
 | `hysteresis` | `0.1` | recovery margin: an alert clears only below `threshold × (1 − hysteresis)` |
 | `heartbeatMs` | `30000` | snapshot push interval |
@@ -137,6 +139,22 @@ Default thresholds (configurable via the plugin config in the profile's cordis.y
 | `maxBufferedBytes` | `65536` | per-subscriber write-buffer high-water mark; a slow consumer over it is dropped |
 | `webhookUrl` | `''` | webhook URL notified on every alert transition; empty disables. See [Webhook notifications](#webhook-notifications) |
 | `webhookTimeoutMs` | `5000` | webhook request timeout in milliseconds |
+
+### Runtime settings (settings page)
+
+Since 0.4.0 the plugin registers a **`dsh-status` settings namespace** (`@deepseek-ai/dsh-settings`). When the profile mounts the settings service, a **Status page appears in the web UI settings panel** (contributed to the `settings.section` slot) and the fields below become **live-tunable — a write takes effect without restarting the harness**:
+
+| Field | Default | Effect timing |
+|---|---|---|
+| `cpuWarning`, `memoryWarning`, `diskWarning`, `eventLoopWarning` | as above | live — the alert monitor re-judges on the next sample |
+| `hysteresis` | `0.1` | live |
+| `heartbeatMs`, `checkIntervalMs` | as above | live — timers are re-armed |
+| `exposeLanAddresses` | `false` | live — the next snapshot honors it |
+| `rateLimitPerMinute` | `300` | live — the limiter's cap is replaced |
+
+**Security boundary.** The settings page deliberately edits only this subset. `authToken` (a secret), `allowedOrigins`, `webhookUrl`/`webhookTimeoutMs` (channel endpoints), and `maxSubscribers`/`maxBufferedBytes` (hub caps) stay in cordis.yml — secrets and endpoints are never reachable from the browser surface. Without a settings service, the plugin runs exactly on its entry config, as before.
+
+The settings transport is loopback-only (like the SSE auth constraint): a browser on a remote machine cannot read or write the namespace — it renders an unavailable state. Per-field "reset" buttons drop the user override so the field re-inherits the cordis.yml entry value.
 
 ### Authentication
 
@@ -156,7 +174,8 @@ A rejected request answers `401` with `{ "ok": false, "error": "unauthorized" }`
 The browser side subscribes through a `fetch`-based SSE reader (auto-reconnects with exponential backoff, honoring the server's `retry:` frame when present) and renders:
 
 - a compact badge in the conversation header (status dot + uptime, click to open);
-- a detail panel with process/resource/service/plugin sections, an event-loop row, a CPU/memory trend chart over the last 60 snapshots, and the last update time;
+- a tabbed detail panel (since 0.5.0): an **Overview** tab with the alert banner, four key-resource cards (CPU, memory, disk, event-loop delay) and the CPU/memory trend chart over the last 60 snapshots, plus a **Details** tab with the full process/resources/disk/service/plugin sections, and the last update time;
+- a full-page **Status** view tab in the session's view ring (since 0.5.1): the whole conversation pane switches to the monitor — larger stat cards, a wide trend chart, and every detail section. Switch via the session tab strip; the panel hints at it. (The badge cannot switch views programmatically: the shell keeps the per-session chat store internal, so the view toggle lives with the user's tab click.);
 - a toast on every alert transition (auto-dismisses after 6 s) plus a pulsing badge while an alert is active;
 - a gray badge dot when the stream is disconnected or no snapshot arrived for 90 s — a monitoring widget must say *unknown*, not *healthy*, when it loses contact. The dot is also gray while the first connection is still being established, so the badge never claims health before it has data.
 
@@ -191,6 +210,11 @@ dsh_status_event_loop_delay_ms 2.3
 dsh_status_loadavg_1 0.5
 dsh_status_process_rss_bytes 123456
 dsh_status_system_memory_used_bytes 12884901888
+dsh_status_disk_total_bytes{mount="/"} 107374182400
+dsh_status_disk_free_bytes{mount="/"} 64424509440
+dsh_status_disk_avail_bytes{mount="/"} 60129542144
+dsh_status_disk_used_bytes{mount="/"} 42949672960
+dsh_status_disk_percent{mount="/"} 0.416
 dsh_status_api_key_configured 1
 dsh_status_plugins_total 42
 dsh_status_plugins_active 40
@@ -211,6 +235,7 @@ The endpoint honors `authToken`, `allowedOrigins`, and `rateLimitPerMinute` exac
 - dsh profile with the web bundle (`@deepseek-ai/dsh-web-app`) — provides `ctx.webServer` and `ctx.pluginInventory`.
 - Node `^22.19 || >=24`.
 - The browser entry renders in the conversation session header (`conversation.session.header.utilities` slot); it is not shown on the empty/home screen.
+- The settings page (0.4.0+) requires the settings surface (`@deepseek-ai/dsh-client-ui-settings` + the settings shell) in the web composition — present in the standard bundle. Without it, the badge and panel still work; only the settings page is absent.
 - The load-average row in the panel is a Unix concept: on Windows it is always `0.00`. CPU utilization and memory metrics work on every platform.
 
 ## Development

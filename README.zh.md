@@ -4,8 +4,8 @@
 
 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（dsh）的状态插件，一个包内含两个平面：
 
-- **Host 平面** — 以 JSON 形式暴露运行中 harness 的运行时健康状态：进程、监听器、API Key 是否存在、内存、运行时长，以及实时的插件清单。
-- **Client 平面** — Web UI（会话右上角）的头部徽标：显示运行时长，点击展开详情面板；当 host 上报过载或内存压力告警时弹出提示。
+- **Host 平面** — 以 JSON 形式暴露运行中 harness 的运行时健康状态：进程、监听器、API Key 是否存在、内存、磁盘、运行时长，以及实时的插件清单。
+- **Client 平面** — Web UI（会话右上角）的头部徽标：显示运行时长，点击展开详情面板；当 host 上报过载、内存压力或磁盘告警时弹出提示；另有「状态」设置页可实时调整告警阈值。
 
 - **包名**：`dsh-status-plugin`
 - **运行时**：host（ESM）+ 浏览器 bundle（CJS factory，按 dsh client-modules 的 `__ModuleLoader__` 契约包装），使用 `tsc` + esbuild 构建到 `lib/`。
@@ -65,6 +65,7 @@ GET /api/status/events   # Server-Sent Events 流
     "eventLoopDelayMs": 2.3,
     "memory": { "rss": 123456, "heapTotal": 654321, "heapUsed": 432100, "external": 12345 },
     "systemMemory": { "total": 17179869184, "free": 4294967296, "used": 12884901888 },
+    "disk": { "mount": "/", "total": 107374182400, "free": 64424509440, "avail": 60129542144, "used": 42949672960, "percent": 0.416 },
     "lanAddresses": ["192.168.5.227"]
   },
   "webServer": {
@@ -88,7 +89,7 @@ GET /api/status/events   # Server-Sent Events 流
 
 | 字段 | 来源 |
 |---|---|
-| `host.*` | `process` + `node:os`（pid、运行时长、进程内存、LAN IPv4 地址）；`cpuPercent` 是基于 `os.cpus()` 增量采样得到的 CPU 利用率，全平台可用；`eventLoopDelayMs` 是自上次采样以来的事件循环平均延迟（`perf_hooks`）；`loadAvg` 是 Unix 负载均值——在 Windows 上恒为 `[0, 0, 0]`；`systemMemory.*` 是机器级内存（`os.totalmem()` − `os.freemem()`） |
+| `host.*` | `process` + `node:os`（pid、运行时长、进程内存、LAN IPv4 地址）；`cpuPercent` 是基于 `os.cpus()` 增量采样得到的 CPU 利用率，全平台可用；`eventLoopDelayMs` 是自上次采样以来的事件循环平均延迟（`perf_hooks`）；`loadAvg` 是 Unix 负载均值——在 Windows 上恒为 `[0, 0, 0]`；`systemMemory.*` 是机器级内存（`os.totalmem()` − `os.freemem()`）；`disk` 是**工作盘**——对 `process.cwd()` 执行 `fs.statfsSync`，失败时回退到系统临时目录，即 harness 实际运行所在文件系统（只有所有探测都失败才为 `null`）；`disk.percent` 采用 `df` 惯例 `used / (used + avail)`，保留块（ext4 为 root 预留的 5%）不会高估使用率 |
 | `webServer.*` | `ctx.webServer`（绑定 host 与实际监听端口） |
 | `apiKey` | `DEEPSEEK_API_KEY` 在 `process.env`，否则在 `cwd/.env` 或 `$DSH_HOME/.env` 中检查（与 dsh CLI 实际加载的层完全一致——`~/.env` 刻意**不**检查）——**只报告是否存在，绝不报告值**；空赋值（如 `DEEPSEEK_API_KEY=""`）不算已配置 |
 | `plugins.entries` | `ctx.pluginInventory.list()`（Cordis Loader 条目的实时状态） |
@@ -102,7 +103,7 @@ API Key 检查只报告 key 是否已配置及其来源；值本身永远不会�
 host 向已打开的浏览器流推送——由服务器决定页面何时需要新状态，空闲页面零请求：
 
 - **`snapshot`** — 完整状态快照，连接时立即发送，之后每 `heartbeatMs`（默认 30 秒）一次。每个快照卡片分解为 `host.*` 中的 `cpuPercent`、`eventLoopDelayMs`、`loadAvg`、`systemMemory` 与进程内存字段，供告警驱动的 UI 使用。
-- **`alert`** — 指标进入或离开告警区间时发送。进入需要 `value > threshold`；激活中的告警只有在值回落到 `threshold × (1 − hysteresis)` 以下才解除，因此徘徊在阈值附近的值不会反复翻转。告警原因：`cpu`、`memory`（Linux 内存压力改用 `/proc/meminfo` 的 `MemAvailable`，不再用裸 `freemem()`——page cache 不再造成误报）、`eventLoop`（事件循环平均延迟，毫秒）。每次状态转换都发送，并在**连接时重新同步**，因此中途打开的页面也能得知正在进行的告警：
+- **`alert`** — 指标进入或离开告警区间时发送。进入需要 `value > threshold`；激活中的告警只有在值回落到 `threshold × (1 − hysteresis)` 以下才解除，因此徘徊在阈值附近的值不会反复翻转。告警原因：`cpu`、`memory`（Linux 内存压力改用 `/proc/meminfo` 的 `MemAvailable`，不再用裸 `freemem()`——page cache 不再造成误报）、`eventLoop`（事件循环平均延迟，毫秒）、`disk`（工作盘使用率，`df` 口径）。每次状态转换都发送，并在**连接时重新同步**，因此中途打开的页面也能得知正在进行的告警：
 
 ```
 event: snapshot
@@ -118,6 +119,7 @@ data: {"active":true,"reason":"cpu","value":0.87,"threshold":0.8}
 |---|---|---|
 | `cpuWarning` | `0.8` | CPU 利用率超过该值时触发 CPU 过载告警 |
 | `memoryWarning` | `0.85` | 系统内存压力超过该值时触发内存告警 |
+| `diskWarning` | `0.9` | 工作盘使用率超过该值时触发磁盘告警 |
 | `eventLoopWarning` | `100` | 事件循环平均延迟（毫秒）超过该值时触发阻塞告警 |
 | `hysteresis` | `0.1` | 恢复余量：告警只在值低于 `threshold × (1 − hysteresis)` 时解除 |
 | `heartbeatMs` | `30000` | 快照推送间隔 |
@@ -130,6 +132,22 @@ data: {"active":true,"reason":"cpu","value":0.87,"threshold":0.8}
 | `maxBufferedBytes` | `65536` | 每个订阅者的写缓冲高水位；超过的慢消费者会被丢弃 |
 | `webhookUrl` | `''` | 每次告警转换时通知的 webhook 地址；留空禁用。见[Webhook 通知](#webhook-通知) |
 | `webhookTimeoutMs` | `5000` | webhook 请求超时（毫秒） |
+
+### 运行时设置（设置页）
+
+自 0.4.0 起插件注册了一个 **`dsh-status` 设置命名空间**（`@deepseek-ai/dsh-settings`）。当 profile 挂载了设置服务时，Web UI 设置面板会出现一个**「状态」设置页**（贡献到 `settings.section` 槽位），以下字段可**实时调整——写入后无需重启 harness 立即生效**：
+
+| 字段 | 默认 | 生效时机 |
+|---|---|---|
+| `cpuWarning`、`memoryWarning`、`diskWarning`、`eventLoopWarning` | 同上 | 实时——告警监控器在下一个采样周期按新阈值判定 |
+| `hysteresis` | `0.1` | 实时 |
+| `heartbeatMs`、`checkIntervalMs` | 同上 | 实时——定时器重新挂载 |
+| `exposeLanAddresses` | `false` | 实时——下一个快照即生效 |
+| `rateLimitPerMinute` | `300` | 实时——限流器容量被替换 |
+
+**安全边界。** 设置页刻意只编辑这个子集。`authToken`（密钥）、`allowedOrigins`、`webhookUrl`/`webhookTimeoutMs`（通知端点）、`maxSubscribers`/`maxBufferedBytes`（hub 容量）都留在 cordis.yml——密钥与端点绝不暴露到浏览器表面。没有设置服务时，插件完全按 entry 配置运行，与之前一致。
+
+设置传输仅限 loopback（与 SSE 鉴权约束同类）：远程机器上的浏览器无法读写该命名空间，页面会显示不可用状态。每个字段旁的「重置」按钮可清除用户覆盖，使该字段重新继承 cordis.yml 的 entry 值。
 
 ### 鉴权
 
@@ -149,7 +167,8 @@ data: {"active":true,"reason":"cpu","value":0.87,"threshold":0.8}
 浏览器侧通过基于 `fetch` 的 SSE 读取器订阅（指数退避自动重连，尊重服务器下发的 `retry:` 帧），并渲染：
 
 - 会话头部的一个紧凑徽标（状态圆点 + 运行时长，点击展开）；
-- 详情面板：进程/资源/服务/插件分区、事件循环延迟行、最近 60 个快照的 CPU/内存趋势图、最近更新时间；
+- 详情面板（0.5.0 起改为 Tab 分区）：**概览**页签——告警横幅、四个关键资源卡片（CPU/内存/磁盘/事件循环延迟）与最近 60 个快照的 CPU/内存趋势图；**详情**页签——完整的进程/资源/磁盘/服务/插件分区；底部显示最近更新时间；
+- 会话视图环中的整页**「状态」页签**（0.5.1 起）：整个会话主区切换为监控视图——更大的统计卡片、宽幅趋势图与全部分区。通过会话页签条切换（面板内有一行提示指引）；徽标无法编程式切换视图——shell 将 per-session 的 chat store 留在内部，视图切换由用户点击页签完成；
 - 每次告警转换弹出 toast（6 秒自动消失），告警激活期间徽标脉冲闪烁；
 - 流断开且 90 秒未收到快照时圆点变灰——监控组件在失联时必须显示"未知"，而不是继续显示"健康"。首个连接尚未建立时圆点同样是灰色，徽标在有数据之前绝不宣称健康。
 
@@ -184,6 +203,11 @@ dsh_status_event_loop_delay_ms 2.3
 dsh_status_loadavg_1 0.5
 dsh_status_process_rss_bytes 123456
 dsh_status_system_memory_used_bytes 12884901888
+dsh_status_disk_total_bytes{mount="/"} 107374182400
+dsh_status_disk_free_bytes{mount="/"} 64424509440
+dsh_status_disk_avail_bytes{mount="/"} 60129542144
+dsh_status_disk_used_bytes{mount="/"} 42949672960
+dsh_status_disk_percent{mount="/"} 0.416
 dsh_status_api_key_configured 1
 dsh_status_plugins_total 42
 dsh_status_plugins_active 40
@@ -204,6 +228,7 @@ dsh_status_plugins_active 40
 - 带 web bundle（`@deepseek-ai/dsh-web-app`）的 dsh profile——提供 `ctx.webServer` 和 `ctx.pluginInventory`。
 - Node `^22.19 || >=24`。
 - 浏览器入口渲染在会话头部（`conversation.session.header.utilities` 槽位）；空白/首页不显示。
+- 设置页（0.4.0+）需要 web 组合里包含设置面（`@deepseek-ai/dsh-client-ui-settings` 与设置 shell）——标准 bundle 自带。缺省时徽标与面板照常工作，只是没有设置页。
 - 面板中的负载均值行是 Unix 概念：Windows 上恒为 `0.00`。CPU 利用率与内存指标全平台可用。
 
 ## 开发

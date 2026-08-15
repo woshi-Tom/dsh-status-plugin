@@ -11,6 +11,7 @@ const payload: StatusPayload = {
     eventLoopDelayMs: 2.3,
     memory: { rss: 1000, heapTotal: 2000, heapUsed: 1500, external: 10 },
     systemMemory: { total: 16_000, free: 4_000, used: 12_000 },
+    disk: { mount: '/', total: 1_000_000, free: 600_000, avail: 550_000, used: 400_000, percent: 0.42 },
     lanAddresses: [],
   },
   webServer: { host: '127.0.0.1', port: 1, url: 'http://127.0.0.1:1' },
@@ -44,10 +45,34 @@ describe('renderMetrics', () => {
     expect(text).toContain('dsh_status_plugins_active 1');
   });
 
+  it('emits working-disk gauges labeled by mount point', () => {
+    const text = renderMetrics(payload);
+    expect(text).toContain('dsh_status_disk_total_bytes{mount="/"} 1000000');
+    expect(text).toContain('dsh_status_disk_free_bytes{mount="/"} 600000');
+    expect(text).toContain('dsh_status_disk_avail_bytes{mount="/"} 550000');
+    expect(text).toContain('dsh_status_disk_used_bytes{mount="/"} 400000');
+    expect(text).toContain('dsh_status_disk_percent{mount="/"} 0.42');
+  });
+
+  it('omits disk gauges when no disk probe succeeded', () => {
+    const noDisk = structuredClone(payload) as StatusPayload;
+    noDisk.host.disk = null;
+    const text = renderMetrics(noDisk);
+    expect(text).not.toContain('dsh_status_disk_');
+  });
+
+  it('escapes quotes and backslashes in mount labels', () => {
+    const weird = structuredClone(payload) as StatusPayload;
+    weird.host.disk = { mount: '/a"b\\c', total: 1, free: 0, avail: 0, used: 1, percent: 1 };
+    const text = renderMetrics(weird);
+    expect(text).toContain('dsh_status_disk_total_bytes{mount="/a\\"b\\\\c"} 1');
+  });
+
   it('never emits a NaN value', () => {
     const broken = structuredClone(payload) as StatusPayload;
     broken.host.cpuPercent = Number.NaN;
     broken.host.loadAvg = [Number.NaN, Number.NaN, Number.NaN];
+    broken.host.disk = { mount: '/', total: Number.NaN, free: Number.NaN, avail: Number.NaN, used: Number.NaN, percent: Number.NaN };
     const text = renderMetrics(broken);
     expect(text).not.toContain('NaN');
   });

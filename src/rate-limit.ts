@@ -8,13 +8,21 @@
  */
 export class RateLimiter {
   private readonly buckets = new Map<string, { tokens: number; last: number }>();
+  private capacity: number;
 
   /**
    * Create the limiter.
    * @param capacity - burst size and refill-per-minute rate in requests.
    *   Zero or negative disables limiting entirely.
    */
-  constructor(private readonly capacity: number) {}
+  constructor(capacity: number) {
+    this.capacity = capacity;
+  }
+
+  /** Replace the per-minute cap at runtime (settings UI); 0 disables limiting. */
+  setCapacity(capacity: number): void {
+    this.capacity = capacity;
+  }
 
   /**
    * Consume one token for the key, if available.

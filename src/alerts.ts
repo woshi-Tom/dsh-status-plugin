@@ -1,10 +1,11 @@
 import { readFileSync } from 'node:fs';
 import { freemem, totalmem } from 'node:os';
 import { cpuUtilization } from './cpu.js';
+import { collectDiskUsage, workingDiskTargets } from './disk.js';
 import { eventLoopDelayMs } from './event-loop.js';
 
 /** A measurable health indicator of the host. */
-export type AlertReason = 'cpu' | 'memory' | 'eventLoop';
+export type AlertReason = 'cpu' | 'memory' | 'eventLoop' | 'disk';
 
 /** A single alert transition broadcast to subscribers. */
 export interface AlertEvent {
@@ -19,6 +20,8 @@ export interface AlertSamplers {
   cpu: () => number;
   memory: () => number;
   eventLoop: () => number;
+  /** Working-disk usage fraction, or `null` when no disk probe succeeded. */
+  disk: () => number | null;
 }
 
 /** System memory pressure as a fraction of total memory (0..1). */
@@ -63,27 +66,44 @@ export class AlertMonitor {
   private readonly active = new Set<AlertReason>();
   private readonly lastValue = new Map<AlertReason, number>();
   private readonly samplers: AlertSamplers;
+  private thresholds: Record<AlertReason, number>;
+  private hysteresis: number;
 
   /**
    * Create the monitor.
    * @param thresholds - per-reason thresholds: `cpu` is the sampled CPU
    *   utilization (fraction 0..1), `memory` the system memory pressure
-   *   (fraction 0..1), `eventLoop` the mean event-loop delay in milliseconds.
+   *   (fraction 0..1), `eventLoop` the mean event-loop delay in milliseconds,
+   *   `disk` the working-disk usage fraction (fraction 0..1).
    * @param hysteresis - recovery margin as a fraction of the threshold.
    * @param check - called for every status transition (enter or leave).
    * @param samplers - value sources; defaults to live sampling.
    */
   constructor(
-    private readonly thresholds: Record<AlertReason, number>,
-    private readonly hysteresis: number,
+    thresholds: Record<AlertReason, number>,
+    hysteresis: number,
     private readonly check: (event: AlertEvent) => void,
     samplers?: AlertSamplers,
   ) {
+    this.thresholds = thresholds;
+    this.hysteresis = hysteresis;
     this.samplers = samplers ?? {
       cpu: () => cpuUtilization() / 100,
       memory: systemMemoryUsage,
       eventLoop: eventLoopDelayMs,
+      disk: () => collectDiskUsage(workingDiskTargets())?.percent ?? null,
     };
+  }
+
+  /**
+   * Replace thresholds and the recovery margin at runtime (settings UI).
+   * Active alerts keep their state; recovery is re-judged against the new
+   * band on the next poll, so lowering a threshold re-alerts promptly and
+   * raising one lets an active alert recover on schedule.
+   */
+  updateThresholds(thresholds: Record<AlertReason, number>, hysteresis: number): void {
+    this.thresholds = thresholds;
+    this.hysteresis = hysteresis;
   }
 
   /** Sample every indicator against its threshold. */
@@ -91,6 +111,8 @@ export class AlertMonitor {
     this.pollReason('cpu', this.samplers.cpu());
     this.pollReason('memory', this.samplers.memory());
     this.pollReason('eventLoop', this.samplers.eventLoop());
+    const disk = this.samplers.disk();
+    if (disk !== null) this.pollReason('disk', disk);
   }
 
   /** Current threshold-breach events, for synchronizing new SSE subscribers. */

@@ -13,6 +13,7 @@ const payload: StatusPayload = {
     pid: 1, cwd: '/tmp', uptimeSeconds: 0, loadAvg: [0, 0, 0], cpuPercent: 0,
     memory: { rss: 1, heapTotal: 1, heapUsed: 1, external: 1 },
     systemMemory: { total: 8, free: 4, used: 4 },
+    disk: null,
     lanAddresses: [],
   },
   webServer: { host: '127.0.0.1', port: 1, url: 'http://127.0.0.1:1' },

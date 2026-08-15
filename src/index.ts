@@ -1,33 +1,21 @@
 import type { IncomingMessage } from 'node:http';
 import { hostname } from 'node:os';
 import type { Context } from '@deepseek-ai/cordis';
+import { installSettingsSection } from '@deepseek-ai/dsh-settings';
 import z from '@deepseek-ai/schemastery';
 import { AlertMonitor, type AlertEvent, type AlertReason } from './alerts.js';
 import { isAuthorized, isOriginAllowed } from './auth.js';
 import { renderMetrics } from './metrics.js';
 import { RateLimiter } from './rate-limit.js';
+import { RUNTIME_DEFAULTS, RuntimeSettingsSchema, SETTINGS_NAMESPACE, type RuntimeSettings } from './settings.js';
 import { SseHub, DEFAULT_MAX_SUBSCRIBERS, DEFAULT_MAX_BUFFERED_BYTES } from './sse.js';
 import { collectStatus, sendJson, type StatusResponse } from './status.js';
 import { postWebhook, type WebhookPayload } from './webhook.js';
 
-/** CPU utilization fraction (0..1) at which the host reports an overload alert. */
-const DEFAULT_CPU_WARNING = 0.8;
-/** System memory pressure fraction (0..1) above which the host reports a memory alert. */
-const DEFAULT_MEMORY_WARNING = 0.85;
-/** Mean event-loop delay (ms) above which the host reports a stall alert. */
-const DEFAULT_EVENT_LOOP_WARNING = 100;
-/** Recovery margin as a fraction of each threshold: an alert clears below `threshold * (1 - hysteresis)`. */
-const DEFAULT_HYSTERESIS = 0.1;
-/** Interval between heartbeat snapshot pushes to SSE subscribers. */
-const DEFAULT_HEARTBEAT_MS = 30_000;
-/** Interval between alert monitor samples. */
-const DEFAULT_CHECK_INTERVAL_MS = 5_000;
-/** Per-IP request cap per minute on the HTTP endpoints; 0 disables limiting. */
-const DEFAULT_RATE_LIMIT_PER_MINUTE = 300;
-
 export interface Config {
   cpuWarning: number;
   memoryWarning: number;
+  diskWarning: number;
   eventLoopWarning: number;
   hysteresis: number;
   heartbeatMs: number;
@@ -51,21 +39,47 @@ export interface Config {
 }
 
 export const Config: z<Config> = z.object({
-  cpuWarning: z.number().min(0).max(1).default(DEFAULT_CPU_WARNING),
-  memoryWarning: z.number().min(0).max(1).default(DEFAULT_MEMORY_WARNING),
-  eventLoopWarning: z.number().min(0).default(DEFAULT_EVENT_LOOP_WARNING),
-  hysteresis: z.number().min(0).max(0.5).default(DEFAULT_HYSTERESIS),
-  heartbeatMs: z.number().min(1_000).default(DEFAULT_HEARTBEAT_MS),
-  checkIntervalMs: z.number().min(1_000).default(DEFAULT_CHECK_INTERVAL_MS),
+  cpuWarning: z.number().min(0).max(1).default(RUNTIME_DEFAULTS.cpuWarning),
+  memoryWarning: z.number().min(0).max(1).default(RUNTIME_DEFAULTS.memoryWarning),
+  diskWarning: z.number().min(0).max(1).default(RUNTIME_DEFAULTS.diskWarning),
+  eventLoopWarning: z.number().min(0).default(RUNTIME_DEFAULTS.eventLoopWarning),
+  hysteresis: z.number().min(0).max(0.5).default(RUNTIME_DEFAULTS.hysteresis),
+  heartbeatMs: z.number().min(1_000).default(RUNTIME_DEFAULTS.heartbeatMs),
+  checkIntervalMs: z.number().min(1_000).default(RUNTIME_DEFAULTS.checkIntervalMs),
   authToken: z.string().default(''),
   allowedOrigins: z.array(z.string()).default([]),
-  exposeLanAddresses: z.boolean().default(false),
-  rateLimitPerMinute: z.natural().default(DEFAULT_RATE_LIMIT_PER_MINUTE),
+  exposeLanAddresses: z.boolean().default(RUNTIME_DEFAULTS.exposeLanAddresses),
+  rateLimitPerMinute: z.natural().default(RUNTIME_DEFAULTS.rateLimitPerMinute),
   maxSubscribers: z.natural().min(1).default(DEFAULT_MAX_SUBSCRIBERS),
   maxBufferedBytes: z.natural().min(1_024).default(DEFAULT_MAX_BUFFERED_BYTES),
   webhookUrl: z.string().default(''),
   webhookTimeoutMs: z.natural().min(100).max(60_000).default(5_000),
 });
+
+/** The runtime-tunable subset of a resolved plugin config. */
+function pickRuntime(config: Config): RuntimeSettings {
+  return {
+    cpuWarning: config.cpuWarning,
+    memoryWarning: config.memoryWarning,
+    diskWarning: config.diskWarning,
+    eventLoopWarning: config.eventLoopWarning,
+    hysteresis: config.hysteresis,
+    heartbeatMs: config.heartbeatMs,
+    checkIntervalMs: config.checkIntervalMs,
+    exposeLanAddresses: config.exposeLanAddresses,
+    rateLimitPerMinute: config.rateLimitPerMinute,
+  };
+}
+
+/** Per-reason alert thresholds derived from the runtime settings. */
+function thresholdsOf(runtime: RuntimeSettings): Record<AlertReason, number> {
+  return {
+    cpu: runtime.cpuWarning,
+    memory: runtime.memoryWarning,
+    disk: runtime.diskWarning,
+    eventLoop: runtime.eventLoopWarning,
+  };
+}
 
 export default {
   name: 'status',
@@ -74,12 +88,7 @@ export default {
   apply(ctx: Context, config: Config) {
     const hub = new SseHub(config.maxSubscribers, config.maxBufferedBytes);
     const limiter = new RateLimiter(config.rateLimitPerMinute);
-    const thresholds: Record<AlertReason, number> = {
-      cpu: config.cpuWarning,
-      memory: config.memoryWarning,
-      eventLoop: config.eventLoopWarning,
-    };
-    const monitor = new AlertMonitor(thresholds, config.hysteresis, (event: AlertEvent) => {
+    const monitor = new AlertMonitor(thresholdsOf(pickRuntime(config)), config.hysteresis, (event: AlertEvent) => {
       hub.broadcast('alert', event);
       if (config.webhookUrl !== '') {
         const payload: WebhookPayload = {
@@ -97,6 +106,57 @@ export default {
         });
       }
     });
+
+    /**
+     * Live config source: the resolved settings namespace while a settings
+     * service is attached, the cordis.yml entry otherwise. `getRuntime` is the
+     * thunk `installSettingsSection` points at the authoritative source (the
+     * resolved scope re-reads on every call, so a settings-page write is
+     * visible at the next refresh without a restart).
+     */
+    const entry = pickRuntime(config);
+    let getRuntime: () => RuntimeSettings = () => entry;
+    let runtime: RuntimeSettings = entry;
+
+    /** The monitor must never take down the harness it watches: timer bodies are isolated and logged. */
+    let heartbeat: ReturnType<typeof setInterval> | null = null;
+    let sampler: ReturnType<typeof setInterval> | null = null;
+    const armTimers = (): void => {
+      if (heartbeat !== null) clearInterval(heartbeat);
+      if (sampler !== null) clearInterval(sampler);
+      heartbeat = setInterval(() => {
+        try {
+          hub.broadcast('snapshot', collectStatus(ctx, runtime.exposeLanAddresses));
+        } catch (error) {
+          ctx.logger.warn('status: snapshot collection failed: %s', error instanceof Error ? error.message : String(error));
+        }
+      }, runtime.heartbeatMs);
+      sampler = setInterval(() => {
+        try {
+          monitor.poll();
+        } catch (error) {
+          ctx.logger.warn('status: alert sampling failed: %s', error instanceof Error ? error.message : String(error));
+        }
+      }, runtime.checkIntervalMs);
+    };
+
+    /** Re-apply every runtime-tunable value after a settings change. */
+    const refresh = (): void => {
+      runtime = getRuntime();
+      monitor.updateThresholds(thresholdsOf(runtime), runtime.hysteresis);
+      limiter.setCapacity(runtime.rateLimitPerMinute);
+      armTimers();
+    };
+
+    // Canonical optional-settings wiring: register the runtime subset as the
+    // `dsh-status` namespace with the entry config as the base layer; the
+    // source thunk follows the resolved scope while attached and falls back
+    // to the entry when no settings service exists.
+    installSettingsSection(ctx, SETTINGS_NAMESPACE, RuntimeSettingsSchema, entry, {
+      setSource: (current) => { getRuntime = current; },
+      onChange: refresh,
+    });
+    refresh();
 
     /** Shared gate: origin policy, then auth, then per-IP rate limit. */
     const guard = (req: IncomingMessage): 0 | 401 | 403 | 429 => {
@@ -123,7 +183,7 @@ export default {
             sendJson(res, status, { ok: false, error: status === 401 ? 'unauthorized' : status === 403 ? 'forbidden' : 'rate limited' });
             return;
           }
-          sendJson(res, 200, collectStatus(ctx, config.exposeLanAddresses));
+          sendJson(res, 200, collectStatus(ctx, runtime.exposeLanAddresses));
         } catch (error) {
           fail(res, error);
         }
@@ -144,7 +204,7 @@ export default {
             'content-type': 'text/plain; version=0.0.4; charset=utf-8',
             'cache-control': 'no-store',
           });
-          res.end(renderMetrics(collectStatus(ctx, config.exposeLanAddresses)));
+          res.end(renderMetrics(collectStatus(ctx, runtime.exposeLanAddresses)));
         } catch (error) {
           fail(res, error);
         }
@@ -161,7 +221,7 @@ export default {
             sendJson(res, status, { ok: false, error: status === 401 ? 'unauthorized' : status === 403 ? 'forbidden' : 'rate limited' });
             return;
           }
-          hub.attach(req, res, collectStatus(ctx, config.exposeLanAddresses), monitor.current());
+          hub.attach(req, res, collectStatus(ctx, runtime.exposeLanAddresses), monitor.current());
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           ctx.logger.warn('status: SSE attach failed: %s', message);
@@ -171,27 +231,10 @@ export default {
       },
     }));
 
-    // The monitor must not be able to take down the harness it watches: a
-    // throwing collection inside a timer callback becomes an uncaughtException
-    // and crashes the process, so every timer body is isolated and logged.
-    const heartbeat = setInterval(() => {
-      try {
-        hub.broadcast('snapshot', collectStatus(ctx, config.exposeLanAddresses));
-      } catch (error) {
-        ctx.logger.warn('status: snapshot collection failed: %s', error instanceof Error ? error.message : String(error));
-      }
-    }, config.heartbeatMs);
-    const sampler = setInterval(() => {
-      try {
-        monitor.poll();
-      } catch (error) {
-        ctx.logger.warn('status: alert sampling failed: %s', error instanceof Error ? error.message : String(error));
-      }
-    }, config.checkIntervalMs);
     ctx.effect(() => {
       return () => {
-        clearInterval(heartbeat);
-        clearInterval(sampler);
+        if (heartbeat !== null) clearInterval(heartbeat);
+        if (sampler !== null) clearInterval(sampler);
         hub.dispose();
         limiter.dispose();
       };

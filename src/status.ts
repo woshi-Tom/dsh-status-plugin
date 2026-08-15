@@ -1,9 +1,10 @@
-import { freemem, homedir, hostname, loadavg, networkInterfaces, totalmem } from 'node:os';
+import { freemem, homedir, hostname, loadavg, networkInterfaces, tmpdir, totalmem } from 'node:os';
 import { join } from 'node:path';
 import { readFileSync } from 'node:fs';
 import type { IncomingMessage } from 'node:http';
 import type { Context } from '@deepseek-ai/cordis';
 import { cpuUtilization } from './cpu.js';
+import { collectDiskUsage, type DiskUsage } from './disk.js';
 import { eventLoopDelayMs } from './event-loop.js';
 
 /** Node process memory snapshot (os-independent subset of process.memoryUsage). */
@@ -82,6 +83,8 @@ export interface StatusPayload {
       free: number;
       used: number;
     };
+    /** Working-disk usage (cwd, temp dir as fallback); `null` when no probe succeeded. */
+    disk: DiskUsage | null;
     lanAddresses: string[];
   };
   webServer: {
@@ -197,6 +200,7 @@ export function collectStatus(ctx: Context, exposeLanAddresses = true): StatusPa
         external: memory.external,
       },
       systemMemory: { total, free, used: total - free },
+      disk: collectDiskUsage([process.cwd(), tmpdir()]),
       lanAddresses: exposeLanAddresses ? collectLanAddresses() : [],
     },
     webServer: {

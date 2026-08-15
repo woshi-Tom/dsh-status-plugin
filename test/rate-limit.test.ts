@@ -43,6 +43,25 @@ describe('RateLimiter', () => {
     for (let i = 0; i < 100; i++) expect(limiter.allow('a', 0)).toBe(true);
   });
 
+  it('applies a runtime capacity change (settings UI)', () => {
+    const limiter = new RateLimiter(1);
+    expect(limiter.allow('a', 0)).toBe(true);
+    expect(limiter.allow('a', 0)).toBe(false);
+    // Raise the cap: the bucket refills to the new capacity over time.
+    limiter.setCapacity(2);
+    expect(limiter.allow('a', 60_000)).toBe(true);
+    expect(limiter.allow('a', 60_000)).toBe(true);
+    expect(limiter.allow('a', 60_000)).toBe(false);
+  });
+
+  it('disables limiting when the runtime capacity is set to zero', () => {
+    const limiter = new RateLimiter(1);
+    expect(limiter.allow('a', 0)).toBe(true);
+    expect(limiter.allow('a', 0)).toBe(false);
+    limiter.setCapacity(0);
+    for (let i = 0; i < 10; i++) expect(limiter.allow('a', 0)).toBe(true);
+  });
+
   it('dispose clears every bucket', () => {
     const limiter = new RateLimiter(1);
     limiter.allow('a', 0);

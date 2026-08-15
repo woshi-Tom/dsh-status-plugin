@@ -1,7 +1,7 @@
 {
   "name": "dsh-status-plugin",
-  "version": "0.2.2",
-  "description": "A dsh status plugin with host-plane and browser halves: harness runtime health (process, listener, API-key presence, memory, uptime, plugin inventory) as JSON plus server-pushed SSE alerts, surfaced as a header badge with an expanded panel in the Web UI",
+  "version": "0.5.2",
+  "description": "A dsh status plugin with host-plane and browser halves: harness runtime health (process, listener, API-key presence, memory, disk, uptime, plugin inventory) as JSON plus server-pushed SSE alerts and live-tunable settings, surfaced as a header badge with an expanded panel and a settings page in the Web UI",
   "keywords": [
     "dsh",
     "dsh-plugin",
@@ -80,7 +80,9 @@
     "@deepseek-ai/dsh-client-locale": "0.1.0-rc.6",
     "@deepseek-ai/dsh-client-runtime": "0.1.0-rc.6",
     "@deepseek-ai/dsh-client-ui-conversation": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-client-ui-settings": "0.1.0-rc.6",
     "@deepseek-ai/dsh-client-ui-slots": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-settings": "0.1.0-rc.6",
     "react": "^18.2.0"
   },
   "devDependencies": {
@@ -89,9 +91,11 @@
     "@deepseek-ai/dsh-client-locale": "0.1.0-rc.6",
     "@deepseek-ai/dsh-client-runtime": "0.1.0-rc.6",
     "@deepseek-ai/dsh-client-ui-conversation": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-client-ui-settings": "0.1.0-rc.6",
     "@deepseek-ai/dsh-client-ui-slots": "0.1.0-rc.6",
     "@deepseek-ai/dsh-host-plugin-inventory": "0.1.0-rc.6",
     "@deepseek-ai/dsh-host-webserver": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-settings": "0.1.0-rc.6",
     "@types/node": "^22",
     "@types/react": "^18.3.1",
     "esbuild": "^0.25.0",

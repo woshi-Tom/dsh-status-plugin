@@ -1,19 +1,25 @@
 import type {} from '@deepseek-ai/dsh-client-locale/client'
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
+import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 import type {} from '@deepseek-ai/dsh-client-ui-slots'
 import { StatusBadge, type StatusBadgeInjected } from './StatusBadge.tsx'
+import { StatusSettings, type StatusSettingsInjected } from './StatusSettings.tsx'
+import { StatusView } from './StatusView.tsx'
 import type { AlertEvent, StatusEvent, StatusPayload } from './status.ts'
+import type { RuntimeSettings } from './settings.ts'
 import { en, zh, type StatusLocaleKey } from './locales.ts'
 import cssText from './status.css?raw'
 
 export type { StatusBadgeInjected, StatusBadgeProps } from './StatusBadge.tsx'
 export type { StatusLocaleKey } from './locales.ts'
 export type { StatusPayload, StatusEvent } from './status.ts'
+export type { StatusSettingsInjected, StatusSettingsProps } from './StatusSettings.tsx'
+export type { StatusViewInjected, StatusViewProps } from './StatusView.tsx'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
   interface LocaleNamespaceMap {
-    /** dsh-status badge and panel copy. */
+    /** dsh-status badge, panel, and settings copy. */
     'dsh-status': StatusLocaleKey
   }
 }
@@ -21,8 +27,8 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
 /** Dictionary namespace owned by this plugin. */
 export const NS = 'dsh-status'
 
-/** Services required by the header registration. */
-export const inject = ['slots', 'locale']
+/** Services required by the header badge and the settings page. */
+export const inject = ['slots', 'locale', 'connection', 'remote', 'settingsScope']
 
 /** Reconnect delay bounds for the SSE client (exponential backoff). */
 const MIN_RETRY_MS = 1_000
@@ -144,6 +150,8 @@ export function apply(ctx: ClientContext): void {
 
   const injected = (): StatusBadgeInjected => ({ fetchStatus, subscribe })
 
+  const t = ctx.locale.bind(NS)
+
   ctx.slots.inject('conversation.session.header.utilities', () => ctx.slots.register({
     name: 'conversation.session.header.utilities',
     id: 'dsh-status',
@@ -151,4 +159,29 @@ export function apply(ctx: ClientContext): void {
     locale: NS,
     inject: injected,
   }, StatusBadge))
+
+  // Full-page status view: a tab in the session's view ring. Programmatic
+  // switching from the badge is not exposed by the shell (the chat store is
+  // conversation-plugin-internal), so users switch via the session tab strip;
+  // the panel hints at it. The injected face is the badge's own data channels.
+  ctx.slots.inject('conversation.view', () => ctx.slots.register({
+    name: 'conversation.view',
+    id: 'dsh-status',
+    order: 100,
+    label: () => t('status'),
+    locale: NS,
+    inject: injected,
+  }, StatusView))
+
+  const settingsScope = ctx.settingsScope.bind<RuntimeSettings>({ namespace: 'dsh-status' })
+  const settingsInjected = (): StatusSettingsInjected => ({ settingsScope })
+
+  ctx.slots.inject('settings.section', () => ctx.slots.register({
+    name: 'settings.section',
+    id: 'dsh-status',
+    order: 100,
+    label: () => t('settingsTitle'),
+    locale: NS,
+    inject: settingsInjected,
+  }, StatusSettings))
 }
